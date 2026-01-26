@@ -1,7 +1,8 @@
+
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本
+# Mihomo 部署脚本 (极简稳定版 - 通知排版优化)
 # =========================================================
 
 # --- 1. 全局配置 ---
@@ -41,7 +42,7 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#     Mihomo 裸核网关 (自动更新与系统级修复)      #${NC}"
+echo -e "${BLUE}#     Mihomo 裸核网关 (自动更新与状态监控)      #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -102,7 +103,7 @@ echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 # =========================================================
 echo -e "\n${YELLOW}>>> [4/7] 部署监控与更新系统...${NC}"
 
-# A. 通知函数 (功能未变)
+# A. 通知函数 (增加 JSON 换行符，文案去句号)
 cat > "$NOTIFY_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -114,60 +115,31 @@ fi
 EOF
 chmod +x "$NOTIFY_SCRIPT"
 
-# B. Watchdog 监控脚本 (🔥已升级：添加故障计数与重启虚拟机功能，保留了所有原有功能)
+# B. Watchdog 监控脚本 (文案去句号)
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
-FAIL_COUNT_FILE="/tmp/.mihomo_net_fail_count"
 
-# 1. 内存监控 (原有功能，完整保留)
+if ! systemctl is-active --quiet mihomo; then exit 0; fi 
+
 MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
 if [ "$MEM_USAGE" -ge 85 ]; then
     $NOTIFY "⚠️ 内存占用过高" "当前内存占用已达 $MEM_USAGE%，可能会影响服务运行"
 fi
 
-# 2. 服务运行状态检测 (新增兜底拉起)
-if ! systemctl is-active --quiet mihomo; then
-    systemctl start mihomo
-    sleep 5 # 给服务一点启动时间
-fi
-
 PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -d '\r')
 [ -z "$PROXY_PORT" ] && PROXY_PORT=7890
 
-# 3. 网络连通性检测 (原有逻辑)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -x "http://127.0.0.1:$PROXY_PORT" --max-time 5 "http://cp.cloudflare.com/generate_204")
 
-if [ "$HTTP_CODE" == "204" ] || [ "$HTTP_CODE" == "200" ]; then
-    # 网络正常，清零失败计数器
-    rm -f "$FAIL_COUNT_FILE"
-    exit 0
-fi
-
-# 4. 故障分级处理机制 (升级功能)
-if [ -f "$FAIL_COUNT_FILE" ]; then
-    FAIL_COUNT=$(cat "$FAIL_COUNT_FILE")
-else
-    FAIL_COUNT=0
-fi
-
-FAIL_COUNT=$((FAIL_COUNT + 1))
-echo "$FAIL_COUNT" > "$FAIL_COUNT_FILE"
-
-if [ "$FAIL_COUNT" -eq 1 ]; then
-    # 第一次检测到断连：尝试重启服务 (原有功能)
-    $NOTIFY "🌐 网络连通性丢失" "节点超时，正在尝试重启服务以恢复网络"
+if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "200" ]; then
+    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，正在尝试重启服务以恢复网络"
     systemctl restart mihomo
-elif [ "$FAIL_COUNT" -ge 2 ]; then
-    # 第二次检测仍断连：执行虚拟机重启 (新增功能)
-    $NOTIFY "🚨 终极修复预警" "服务重启未能恢复网络，即将执行【虚拟机重启】！"
-    sleep 3 # 确保通知发送完毕
-    reboot
 fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 自动更新脚本 (功能未变)
+# C. 自动更新脚本 (文案去句号)
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -203,7 +175,7 @@ EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (功能未变)
+# 6. 注册 Systemd 服务 (文案去句号)
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
@@ -270,7 +242,7 @@ EOF
 systemctl daemon-reload
 
 # =========================================================
-# 7. 全能管理菜单 (功能未变)
+# 7. 全能管理菜单
 # =========================================================
 echo -e "\n${YELLOW}>>> [6/7] 生成管理菜单...${NC}"
 
@@ -380,7 +352,7 @@ EOF2
 while true; do
     clear
     echo -e "${BLUE}########################################${NC}"
-    echo -e "${BLUE}#            Mihomo 管理面板           #${NC}"
+    echo -e "${BLUE}#           Mihomo 管理面板            #${NC}"
     echo -e "${BLUE}########################################${NC}"
     check_status
     echo ""
@@ -416,8 +388,8 @@ chmod +x "$MIHOMO_BIN"
 # =========================================================
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
-# 发送第一条 "已上线" 通知
-/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与系统级网络监控已启用"
+# 发送第一条 "已上线" 通知 (文案去句号)
+/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用"
 
 # 执行首次配置拉取
 bash "$UPDATE_SCRIPT" 

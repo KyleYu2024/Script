@@ -41,7 +41,7 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#   Mihomo 裸核网关 (智能静默更新与守护终极版)  #${NC}"
+echo -e "${BLUE}#   Mihomo 裸核网关   #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -169,7 +169,7 @@ if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
         rm -f "${CONF_FILE}.tmp"
     fi
 else
-    $NOTIFY "❌ 订阅下载失败" "无法从 $SUB_URL 获取配置 (网络超时或链接失效)。"
+    $NOTIFY "❌ 订阅下载失败" "无法从 $SUB_URL 获取配置 (网络超时或链接失效)"
     rm -f "${CONF_FILE}.tmp"
 fi
 EOF
@@ -194,7 +194,7 @@ ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
 ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"; fi'
 
 # 停止通知：崩溃时无视静默锁强制报警，正常停止时检查静默锁
-ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止。"; fi'
+ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止"; fi'
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -336,7 +336,7 @@ EOF2
 while true; do
     clear
     echo -e "${BLUE}########################################${NC}"
-    echo -e "${BLUE}#      Mihomo 管理面板 (终极版)        #${NC}"
+    echo -e "${BLUE}#      Mihomo 管理面板       #${NC}"
     echo -e "${BLUE}########################################${NC}"
     check_status
     echo ""
@@ -378,7 +378,7 @@ chmod +x "$MIHOMO_BIN"
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
 # 【优化顺序】：先发总的已上线通知
-/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已上线" "系统部署完成！目前已启用【智能静默更新】与【断网自愈监控】。"
+/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已上线" "系统部署完成！目前已启用【智能静默更新】与【断网自愈监控】"
 
 # 随后执行首次配置拉取和启动，避免上线通知被压到最后
 bash "$UPDATE_SCRIPT" 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本 (智能静默更新 + 断网自愈)
+# Mihomo 守护版部署脚本 (智能静默更新 + 断网自愈)
 # =========================================================
 
 # --- 1. 全局变量 ---
@@ -41,7 +41,7 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#   Mihomo 裸核网关 (智能静默更新与守护)  #${NC}"
+echo -e "${BLUE}#   Mihomo 裸核网关 (智能静默更新与守护终极版)  #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -183,6 +183,7 @@ User=root
 Restart=always
 ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
 
+# 统一时间格式：包含 年-月-日 时:分:秒
 ExecStartPost=/usr/bin/bash -c '/usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"'
 ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" = "success" ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止。"; else /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; fi'
 

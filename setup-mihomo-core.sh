@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 全能部署脚本 (Notify + ASN全库自动维护版)
+# Mihomo 全能部署脚本 (Notify + 全库维护 + 极致防卡死版)
 # =========================================================
 
 # --- 1. 全局变量 ---
@@ -29,7 +29,7 @@ if [ -f "$CORE_BIN" ] && [ -f "$MIHOMO_BIN" ]; then bash "$MIHOMO_BIN"; exit 0; 
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#   Mihomo 裸核网关 (全库补全 + Notify版)       #${NC}"
+echo -e "${BLUE}#   Mihomo 裸核网关 (全库补全 + 极致防卡死)     #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -41,9 +41,9 @@ if [ -f /etc/debian_version ]; then apt update -q && apt install -y $PACKAGES -q
 if ! sysctl net.ipv4.ip_forward | grep -q "1"; then echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf; sysctl -p >/dev/null 2>&1; fi
 
 # =========================================================
-# 4. 核心与全量数据库拉取 (✅ 新增 ASN 和 Geo 数据源)
+# 4. 核心与全量数据库拉取 (✅ 已加装防卡死与进度提示)
 # =========================================================
-echo -e "\n${YELLOW}>>> [2/5] 下载核心与 Geo 数据库(IP/ASN/Site)...${NC}"
+echo -e "\n${YELLOW}>>> [2/5] 下载核心与 Geo 数据库...${NC}"
 GH_PROXY="https://gh-proxy.com/"
 ARCH=$(uname -m)
 MIHOMO_VER="v1.18.1"
@@ -55,19 +55,26 @@ case $ARCH in
     *) echo -e "${RED}不支持架构: $ARCH${NC}"; exit 1 ;;
 esac
 
-curl -L -o /tmp/mihomo.gz "$DL_URL" && gzip -d /tmp/mihomo.gz
+echo -e "${GREEN}[1/5] 正在下载 Mihomo 核心...${NC}"
+curl -L --max-time 120 -o /tmp/mihomo.gz "$DL_URL" && gzip -d /tmp/mihomo.gz
 mv /tmp/mihomo "$CORE_BIN" && chmod +x "$CORE_BIN"
 mkdir -p "$CONF_DIR/ui"
 
-# 下载核心数据库
-curl -sL -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
-curl -sL -o "$CONF_DIR/geosite.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-curl -sL -o "$CONF_DIR/geoip.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
-# 解决 log 中的 IP-ASN 报错
-curl -sL -o "$CONF_DIR/GeoLite2-ASN.mmdb" "${GH_PROXY}https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb"
+# --- 数据库统一下载 (带 60 秒超时和重试机制) ---
+echo -e "${GREEN}[2/5] 正在下载 Country.mmdb...${NC}"
+curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
+
+echo -e "${GREEN}[3/5] 正在下载 geosite.dat...${NC}"
+curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/geosite.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+
+echo -e "${GREEN}[4/5] 正在下载 geoip.dat...${NC}"
+curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/geoip.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
+
+echo -e "${GREEN}[5/5] 正在下载 GeoLite2-ASN.mmdb...${NC}"
+curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/GeoLite2-ASN.mmdb" "${GH_PROXY}https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb"
 
 # =========================================================
-# 5. 生成自动更新脚本 (✅ 新增配置注入)
+# 5. 生成自动更新脚本
 # =========================================================
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
@@ -87,7 +94,6 @@ echo ">>> [后台] 正在从 $SUB_URL 下载配置..."
 curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
 
 if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
-    # ✅ 强力注入：确保配置包含正确的数据库更新地址，防止内核报错
     if ! grep -q "^geox-url:" "${CONF_FILE}.tmp"; then
         cat >> "${CONF_FILE}.tmp" <<INNEREOF
 
@@ -169,7 +175,7 @@ bash "$UPDATE_SCRIPT"
 systemctl enable --now mihomo-update.timer
 
 # =========================================================
-# 8. 全能管理菜单 (✅ 新增内存显示)
+# 8. 全能管理菜单
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/5] 生成管理菜单...${NC}"
 

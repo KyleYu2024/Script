@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本 (静默更新 + 断网自愈)
+# Mihomo 部署脚本 (自动更新 + 状态监控)
 # =========================================================
 
 # --- 1. 全局变量 ---
@@ -41,13 +41,13 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#   Mihomo 裸核网关   #${NC}"
+echo -e "${BLUE}#     Mihomo 裸核网关 (自动更新与状态监控)      #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
 # 2. 环境与依赖安装
 # =========================================================
-echo -e "\n${YELLOW}>>> [1/7] 安装必要组件与系统调优...${NC}"
+echo -e "\n${YELLOW}>>> [1/7] 安装必要组件...${NC}"
 PACKAGES="curl gzip tar nano unzip jq gawk bc"
 if [ -f /etc/debian_version ]; then
     apt update -q && apt install -y $PACKAGES -q
@@ -61,7 +61,7 @@ if ! sysctl net.ipv4.ip_forward | grep -q "1"; then
 fi
 
 # =========================================================
-# 3. 核心与数据库拉取 (适配 IP-ASN)
+# 3. 核心与数据库拉取
 # =========================================================
 echo -e "\n${YELLOW}>>> [2/7] 下载核心与数据库...${NC}"
 GH_PROXY="https://gh-proxy.com/"
@@ -97,9 +97,9 @@ echo "SUB_INTERVAL=\"$USER_INTERVAL\"" >> "$SUB_INFO_FILE"
 echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 
 # =========================================================
-# 5. 生成核心脚本 (通知、守护、智能更新)
+# 5. 生成核心脚本 (通知、监控、更新)
 # =========================================================
-echo -e "\n${YELLOW}>>> [4/7] 部署高级网络监控与智能更新系统...${NC}"
+echo -e "\n${YELLOW}>>> [4/7] 部署状态监控与更新系统...${NC}"
 
 # A. 通知函数生成器
 cat > "$NOTIFY_SCRIPT" <<'EOF'
@@ -111,7 +111,7 @@ fi
 EOF
 chmod +x "$NOTIFY_SCRIPT"
 
-# B. Watchdog 监控脚本 (防死机、防内存爆满)
+# B. Watchdog 监控脚本
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -121,7 +121,7 @@ if ! systemctl is-active --quiet mihomo; then exit 0; fi
 
 MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
 if [ "$MEM_USAGE" -ge 85 ]; then
-    $NOTIFY "⚠️ 系统内存告急" "当前内存占用已达 $MEM_USAGE%，可能会导致 Mihomo 网络卡死。"
+    $NOTIFY "⚠️ 内存占用过高" "当前内存占用已达 $MEM_USAGE%，可能会影响服务运行。时间: $(date '+%Y-%m-%d %H:%M:%S')"
 fi
 
 PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -d '\r')
@@ -130,13 +130,13 @@ PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -x "http://127.0.0.1:$PROXY_PORT" --max-time 5 "http://cp.cloudflare.com/generate_204")
 
 if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "200" ]; then
-    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，无法通过代理访问外网。Watchdog 正在尝试重启 Mihomo 服务..."
+    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，正在尝试重启服务以恢复网络。时间: $(date '+%Y-%m-%d %H:%M:%S')"
     systemctl restart mihomo
 fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 智能更新脚本 (无变化不打扰机制 + 临时静默锁)
+# C. 更新脚本 (对比机制 + 静默锁)
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -148,7 +148,7 @@ curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
 if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
     if grep -q "proxies:" "${CONF_FILE}.tmp" || grep -q "proxy-providers:" "${CONF_FILE}.tmp"; then
         
-        # 智能对比：无变化则静默退出
+        # 对比机制：无变化则静默退出
         if [ -f "$CONF_FILE" ] && cmp -s "$CONF_FILE" "${CONF_FILE}.tmp"; then
             rm -f "${CONF_FILE}.tmp"
             exit 0
@@ -157,28 +157,28 @@ if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
         # 有变化，执行覆盖
         mv "${CONF_FILE}.tmp" "$CONF_FILE"
         
-        # 【新增】：创建静默锁，屏蔽 Systemd 的启停通知
+        # 创建静默锁，屏蔽服务重启通知
         touch /tmp/.mihomo_mute_notify
         systemctl try-restart mihomo
-        rm -f /tmp/.mihomo_mute_notify # 重启完毕，解除静默锁
+        rm -f /tmp/.mihomo_mute_notify
         
-        # 只发送一条精简的更新成功通知
-        $NOTIFY "🔄 订阅更新成功" "检测到节点配置有变更，已静默应用新配置并重启服务。时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        # 发送更新通知
+        $NOTIFY "🔄 订阅配置已更新" "检测到配置变更，已应用并重启服务。时间: $(date '+%Y-%m-%d %H:%M:%S')"
     else
-        $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚！"
+        $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚。时间: $(date '+%Y-%m-%d %H:%M:%S')"
         rm -f "${CONF_FILE}.tmp"
     fi
 else
-    $NOTIFY "❌ 订阅下载失败" "无法从 $SUB_URL 获取配置 (网络超时或链接失效)"
+    $NOTIFY "❌ 订阅下载失败" "无法从订阅源获取配置 (网络超时或链接失效)。时间: $(date '+%Y-%m-%d %H:%M:%S')"
     rm -f "${CONF_FILE}.tmp"
 fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (全状态捕获 + 静默锁机制)
+# 6. 注册 Systemd 服务
 # =========================================================
-echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务与定时器...${NC}"
+echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
 [Unit]
 Description=Mihomo Daemon
@@ -190,11 +190,11 @@ User=root
 Restart=always
 ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
 
-# 启动通知：检查是否存在静默锁
+# 启动通知
 ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"; fi'
 
-# 停止通知：崩溃时无视静默锁强制报警，正常停止时检查静默锁
-ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止"; fi'
+# 停止或异常通知 (已补全时间戳)
+ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 异常退出" "内核意外退出，退出码: $EXIT_CODE ($EXIT_STATUS)。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常停止。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"; fi'
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -221,7 +221,7 @@ Type=oneshot
 ExecStart=$UPDATE_SCRIPT
 EOF
 
-# Watchdog 定时器 (每3分钟检测网络)
+# Watchdog 定时器
 cat > /etc/systemd/system/mihomo-watchdog.timer <<EOF
 [Unit]
 Description=Timer for Mihomo Network Watchdog
@@ -273,9 +273,9 @@ check_status() {
     fi
     
     if systemctl is-active --quiet mihomo-watchdog.timer; then
-        echo -e "断网监控: ${GREEN}已启用${NC}"
+        echo -e "网络监控: ${GREEN}已启用${NC}"
     else
-        echo -e "断网监控: ${RED}已禁用${NC}"
+        echo -e "网络监控: ${RED}已禁用${NC}"
     fi
 }
 
@@ -325,7 +325,7 @@ WantedBy=timers.target
 EOF2
                 systemctl daemon-reload
                 systemctl restart mihomo-update.timer
-                echo -e "${GREEN}配置已保存，定时器已重载！${NC}"
+                echo -e "${GREEN}配置已保存，定时器已重载。${NC}"
                 sleep 2
                 return ;;
             q|Q) return ;;
@@ -336,15 +336,15 @@ EOF2
 while true; do
     clear
     echo -e "${BLUE}########################################${NC}"
-    echo -e "${BLUE}#      Mihomo 管理面板       #${NC}"
+    echo -e "${BLUE}#           Mihomo 管理面板            #${NC}"
     echo -e "${BLUE}########################################${NC}"
     check_status
     echo ""
     echo -e "1. ${GREEN}启动${NC}  2. ${RED}停止${NC}  3. ${YELLOW}重启${NC}  4. 查看日志"
     echo "----------------------------------------"
     echo -e "5. 切换本地配置文件"
-    echo -e "6. 立即强制更新订阅 (静默模式)"
-    echo -e "7. ${CYAN}修改订阅/通知/更新频率 (二次配置)${NC}"
+    echo -e "6. 立即更新订阅"
+    echo -e "7. ${CYAN}修改订阅/通知/更新频率${NC}"
     echo -e "8. 重装 Web 面板"
     echo "----------------------------------------"
     echo -e "9. ${RED}卸载 Mihomo${NC}"
@@ -377,10 +377,10 @@ chmod +x "$MIHOMO_BIN"
 # --- 8. 完成启动与排序通知 ---
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
-# 【优化顺序】：先发总的已上线通知
-/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已上线" "系统部署完成！目前已启用【智能静默更新】与【断网自愈监控】"
+# 发送部署完成通知
+/usr/local/bin/mihomo-notify.sh "✅ Mihomo 部署完成" "系统已上线，自动更新与网络监控已启用。时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-# 随后执行首次配置拉取和启动，避免上线通知被压到最后
+# 首次配置拉取和启动
 bash "$UPDATE_SCRIPT" 
 systemctl enable --now mihomo-update.timer
 systemctl enable --now mihomo-watchdog.timer

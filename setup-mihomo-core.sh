@@ -90,9 +90,9 @@ echo "将使用版本: ${LATEST_TAG}"
 
 # 国内加速镜像列表（按优先级排序，支持自动 fallback，优先 https://ghproxy.net）
 MIRRORS=(
-    "https://ghproxy.net/https://"
+    "https://ghproxy.net/"
     "https://mirror.ghproxy.com/"
-    "https://ghps.cc/https://"
+    "https://ghps.cc/"
     "https://gh.ddlc.top/"
     ""  # 空字符串表示直连 GitHub
 )

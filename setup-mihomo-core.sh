@@ -2,7 +2,7 @@
 # =========================================================
 # Mihomo 裸核网关一键部署脚本（2025-2026 推荐版，带 CLI 管理菜单）
 # 目标：干净、可靠、可维护、自动跟进最新版 + 简单 SSH CLI 管理
-# 新增：核心下载支持中国国内加速镜像
+# 新增：核心下载支持中国国内加速镜像（优先 https://ghproxy.net）
 # =========================================================
 set -euo pipefail
 
@@ -88,10 +88,10 @@ fi
 
 echo "将使用版本: ${LATEST_TAG}"
 
-# 国内加速镜像列表（按优先级排序，支持自动 fallback）
+# 国内加速镜像列表（按优先级排序，支持自动 fallback，优先 https://ghproxy.net）
 MIRRORS=(
-    "https://mirror.ghproxy.com/"
     "https://ghproxy.net/https://"
+    "https://mirror.ghproxy.com/"
     "https://ghps.cc/https://"
     "https://gh.ddlc.top/"
     ""  # 空字符串表示直连 GitHub
@@ -308,7 +308,7 @@ echo -e "查看日志：  ${CYAN}journalctl -u mihomo -f${NC}"
 echo -e "安装日志：  ${CYAN}$LOG_FILE${NC}\n"
 
 # 清理安装脚本（可选）
-# rm -f "$0"
+rm -f "$0"
 
 # 进入管理菜单
 exec "$MIHOMO_CLI"

@@ -388,7 +388,7 @@ chmod +x "$MIHOMO_BIN"
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
 # 发送第一条 "已上线" 通知 (文案去句号)
-/usr/local/bin/mihomo-notify.sh "✅ Mihomo 已部署完成" "自动更新与网络监控已启用"
+/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用"
 
 # 执行首次配置拉取
 bash "$UPDATE_SCRIPT" 

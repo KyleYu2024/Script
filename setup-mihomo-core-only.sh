@@ -106,7 +106,8 @@ if [ -f "\$SUB_INFO_FILE" ]; then source "\$SUB_INFO_FILE"; else exit 1; fi
 curl -L -s -o "\${CONF_FILE}.tmp" "\$SUB_URL"
 if [ \$? -eq 0 ] && [ -s "\${CONF_FILE}.tmp" ]; then
     mv "\${CONF_FILE}.tmp" "\$CONF_FILE"
-    systemctl restart mihomo
+    # 重启服务，只有当服务已加载时才生效
+    systemctl try-restart mihomo
     send_notify "Mihomo 订阅更新成功" "节点数据已更新并重启服务。时间: \$(date)"
 else
     send_notify "Mihomo 订阅更新失败" "无法从 \$SUB_URL 获取配置，请检查链接。"
@@ -116,7 +117,7 @@ EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 配置订阅与服务注册 (含异常监控)
+# 6. 配置订阅与服务注册 (✅已修复执行顺序)
 # =========================================================
 echo -e "\n${YELLOW}>>> [3/5] 配置订阅...${NC}"
 read -p "请输入订阅链接 (Sub-Store/机场): " USER_URL
@@ -125,9 +126,6 @@ read -p "请输入自动更新间隔 (分钟, 默认60): " USER_INTERVAL
 
 echo "SUB_URL=\"$USER_URL\"" > "$SUB_INFO_FILE"
 echo "SUB_INTERVAL=\"$USER_INTERVAL\"" >> "$SUB_INFO_FILE"
-
-# 立即执行首次更新
-bash "$UPDATE_SCRIPT"
 
 echo -e "\n${YELLOW}>>> [4/5] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<EOF
@@ -140,7 +138,6 @@ Type=simple
 User=root
 Restart=always
 ExecStart=$CORE_BIN -d $CONF_DIR -f $CONF_FILE
-# 核心功能：当非正常退出时，通过 POST 触发 Notify
 ExecStopPost=/usr/bin/bash -c 'if [ "\$EXIT_STATUS" != "0" ]; then curl -s -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 运行异常\", \"content\":\"内核崩溃或意外退出，退出码: \$EXIT_STATUS\"}"; fi'
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -167,8 +164,13 @@ Type=oneshot
 ExecStart=$UPDATE_SCRIPT
 EOF
 
+# 先加载系统配置
 systemctl daemon-reload
-systemctl enable --now mihomo
+
+# 然后再执行首次更新（此时 mihomo.service 已注册，update 脚本内的 restart 不会报错）
+bash "$UPDATE_SCRIPT"
+
+# 启动定时器
 systemctl enable --now mihomo-update.timer
 
 # =========================================================

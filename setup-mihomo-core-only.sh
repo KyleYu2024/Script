@@ -403,5 +403,8 @@ systemctl enable --now mihomo-watchdog.timer
 bash -c "source $MIHOMO_BIN; update_ui auto >/dev/null 2>&1"
 sleep 1
 
+# [新增] 脚本自我销毁机制
+rm -f "$0"
+
 # 进入交互式菜单
 bash "$MIHOMO_BIN"

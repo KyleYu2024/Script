@@ -48,7 +48,7 @@ echo -e "${BLUE}#################################################${NC}"
 # 2. 环境与依赖安装
 # =========================================================
 echo -e "\n${YELLOW}>>> [1/7] 安装必要组件与系统调优...${NC}"
-PACKAGES="curl gzip tar nano unzip jq awk bc"
+PACKAGES="curl gzip tar nano unzip jq gawk bc"
 if [ -f /etc/debian_version ]; then
     apt update -q && apt install -y $PACKAGES -q
 elif [ -f /etc/alpine-release ]; then

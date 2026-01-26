@@ -14,6 +14,6 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 ## 3. mihomo裸核安装（Linux/lxc）
 
 ```bash
-wget -O install.sh https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/setup-mihomo-core-only.sh && bash install.sh && rm install.sh
+wget -O install.sh https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/setup-mihomo-core.sh && bash install.sh && rm install.sh
 
 ```

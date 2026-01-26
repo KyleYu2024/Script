@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 守护版部署脚本 (智能静默更新 + 断网自愈)
+# Mihomo 部署脚本 (静默更新 + 断网自愈)
 # =========================================================
 
 # --- 1. 全局变量 ---
@@ -136,7 +136,7 @@ fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 智能更新脚本 (无变化不打扰机制)
+# C. 智能更新脚本 (无变化不打扰机制 + 临时静默锁)
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -148,15 +148,22 @@ curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
 if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
     if grep -q "proxies:" "${CONF_FILE}.tmp" || grep -q "proxy-providers:" "${CONF_FILE}.tmp"; then
         
-        # 【智能对比机制】：如果新旧内容一致，直接静默退出，不重启不通知
+        # 智能对比：无变化则静默退出
         if [ -f "$CONF_FILE" ] && cmp -s "$CONF_FILE" "${CONF_FILE}.tmp"; then
             rm -f "${CONF_FILE}.tmp"
             exit 0
         fi
 
+        # 有变化，执行覆盖
         mv "${CONF_FILE}.tmp" "$CONF_FILE"
+        
+        # 【新增】：创建静默锁，屏蔽 Systemd 的启停通知
+        touch /tmp/.mihomo_mute_notify
         systemctl try-restart mihomo
-        $NOTIFY "🔄 订阅更新成功" "检测到节点配置有变更，已应用新配置并重启服务。时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        rm -f /tmp/.mihomo_mute_notify # 重启完毕，解除静默锁
+        
+        # 只发送一条精简的更新成功通知
+        $NOTIFY "🔄 订阅更新成功" "检测到节点配置有变更，已静默应用新配置并重启服务。时间: $(date '+%Y-%m-%d %H:%M:%S')"
     else
         $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚！"
         rm -f "${CONF_FILE}.tmp"
@@ -169,7 +176,7 @@ EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (全状态捕获)
+# 6. 注册 Systemd 服务 (全状态捕获 + 静默锁机制)
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务与定时器...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
@@ -183,9 +190,11 @@ User=root
 Restart=always
 ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
 
-# 统一时间格式：包含 年-月-日 时:分:秒
-ExecStartPost=/usr/bin/bash -c '/usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"'
-ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" = "success" ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止。"; else /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; fi'
+# 启动通知：检查是否存在静默锁
+ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。时间: $(date +\"%%Y-%%m-%%d %%H:%%M:%%S\")"; fi'
+
+# 停止通知：崩溃时无视静默锁强制报警，正常停止时检查静默锁
+ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 运行崩溃" "内核意外退出！退出原因: $EXIT_CODE ($EXIT_STATUS)。"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止。"; fi'
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -231,9 +240,6 @@ ExecStart=$WATCHDOG_SCRIPT
 EOF
 
 systemctl daemon-reload
-bash "$UPDATE_SCRIPT" # 首次执行获取配置
-systemctl enable --now mihomo-update.timer
-systemctl enable --now mihomo-watchdog.timer
 
 # =========================================================
 # 7. 全能管理菜单
@@ -330,7 +336,7 @@ EOF2
 while true; do
     clear
     echo -e "${BLUE}########################################${NC}"
-    echo -e "${BLUE}#      Mihomo 管理面板        #${NC}"
+    echo -e "${BLUE}#      Mihomo 管理面板 (终极版)        #${NC}"
     echo -e "${BLUE}########################################${NC}"
     check_status
     echo ""
@@ -368,9 +374,17 @@ done
 EOF
 chmod +x "$MIHOMO_BIN"
 
-# --- 8. 完成 ---
+# --- 8. 完成启动与排序通知 ---
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
+
+# 【优化顺序】：先发总的已上线通知
 /usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已上线" "系统部署完成！目前已启用【智能静默更新】与【断网自愈监控】。"
+
+# 随后执行首次配置拉取和启动，避免上线通知被压到最后
+bash "$UPDATE_SCRIPT" 
+systemctl enable --now mihomo-update.timer
+systemctl enable --now mihomo-watchdog.timer
+
 bash -c "source $MIHOMO_BIN; update_ui auto >/dev/null 2>&1"
 sleep 1
 bash "$MIHOMO_BIN"

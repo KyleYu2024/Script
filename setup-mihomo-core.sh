@@ -1,8 +1,7 @@
-
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本 (极简稳定版 - 通知排版优化)
+# Mihomo 部署脚本 (极简稳定版 - 包含 LXC 智能检测)
 # =========================================================
 
 # --- 1. 全局配置 ---
@@ -46,9 +45,9 @@ echo -e "${BLUE}#     Mihomo 裸核网关 (自动更新与状态监控)      #${
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
-# 2. 环境与依赖安装
+# 2. 环境与依赖安装 (包含 LXC 特殊检测)
 # =========================================================
-echo -e "\n${YELLOW}>>> [1/7] 安装系统依赖...${NC}"
+echo -e "\n${YELLOW}>>> [1/7] 安装系统依赖与环境检测...${NC}"
 PACKAGES="curl gzip tar nano unzip jq gawk bc"
 if [ -f /etc/debian_version ]; then
     apt update -q && apt install -y $PACKAGES -q
@@ -60,6 +59,21 @@ fi
 if ! sysctl net.ipv4.ip_forward | grep -q "1"; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     sysctl -p >/dev/null 2>&1
+fi
+
+# 【新增】LXC 环境智能检测与 PVE 宿主机配置提示
+if [ "$(systemd-detect-virt)" == "lxc" ]; then
+    echo -e "\n${RED}==================== [重要提醒] ====================${NC}"
+    echo -e "${CYAN}检测到当前运行在 PVE LXC 容器中。为了正常使用 TUN 模式，${NC}"
+    echo -e "${CYAN}请务必在 PVE 宿主机上执行以下操作：${NC}"
+    echo -e "1. 进入 PVE 宿主机终端"
+    echo -e "2. 编辑此容器的配置文件 (例如: nano /etc/pve/lxc/100.conf)"
+    echo -e "3. 在文件末尾添加以下内容："
+    echo -e "${GREEN}lxc.cgroup2.devices.allow: c 10:200 rwm"
+    echo -e "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file${NC}"
+    echo -e "4. 保存后重启该 LXC 容器。"
+    echo -e "${RED}====================================================${NC}\n"
+    read -p "请确认已了解上述操作，按回车键继续安装..." 
 fi
 
 # =========================================================
@@ -103,19 +117,18 @@ echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 # =========================================================
 echo -e "\n${YELLOW}>>> [4/7] 部署监控与更新系统...${NC}"
 
-# A. 通知函数 (增加 JSON 换行符，文案去句号)
+# A. 通知函数
 cat > "$NOTIFY_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
 if [ -n "$NOTIFY_URL" ]; then
     CURRENT_TIME=$(date "+%Y-%m-%d %H:%M:%S")
-    # 使用 \n 换行
     curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$2\\n时间: $CURRENT_TIME\"}" > /dev/null 2>&1
 fi
 EOF
 chmod +x "$NOTIFY_SCRIPT"
 
-# B. Watchdog 监控脚本 (文案去句号)
+# B. Watchdog 监控脚本
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
@@ -139,7 +152,7 @@ fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 自动更新脚本 (文案去句号)
+# C. 自动更新脚本
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -175,7 +188,7 @@ EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (文案去句号)
+# 6. 注册 Systemd 服务
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
@@ -388,8 +401,8 @@ chmod +x "$MIHOMO_BIN"
 # =========================================================
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
-# 发送第一条 "已上线" 通知 (文案去句号)
-/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用"
+# 发送第一条 "已上线" 通知
+/usr/local/bin/mihomo-notify.sh "✅ Mihomo 已部署完成" "自动更新与网络监控已启用"
 
 # 执行首次配置拉取
 bash "$UPDATE_SCRIPT" 

@@ -1,312 +1,276 @@
 #!/bin/bash
-# =========================================================
-# Mihomo 裸核网关一键部署脚本（2025-2026 推荐版，带 CLI 管理菜单）
-# 目标：干净、可靠、可维护、自动跟进最新版 + 简单 SSH CLI 管理
-# 新增：核心下载支持中国国内加速镜像（优先 https://ghproxy.net）
-# =========================================================
-set -euo pipefail
 
-# 颜色定义
-RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m'
-BLUE='\033[0;34m' CYAN='\033[0;36m' NC='\033[0m'
+# =========================================================
+# Mihomo 全能部署脚本 (Notify + ASN全库自动维护版)
+# =========================================================
 
-# 核心路径（内核用 mihomo-core，mihomo 是 CLI 管理入口）
+# --- 1. 全局变量 ---
+MIHOMO_BIN="/usr/local/bin/mihomo"
 CORE_BIN="/usr/local/bin/mihomo-core"
-MIHOMO_CLI="/usr/local/bin/mihomo"  # CLI 管理脚本
+UPDATE_SCRIPT="/usr/local/bin/mihomo-update.sh"
 CONF_DIR="/etc/mihomo"
 CONF_FILE="$CONF_DIR/config.yaml"
 SUB_INFO_FILE="$CONF_DIR/.subscription_info"
-LOG_FILE="$CONF_DIR/install.log"
-
-UPDATE_SCRIPT="/usr/local/bin/mihomo-update.sh"
-WATCHDOG_SCRIPT="/usr/local/bin/mihomo-watchdog.sh"
-NOTIFY_SCRIPT="/usr/local/bin/mihomo-notify.sh"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
 
-# =========================================================
-# 0. 权限 & 重复运行保护
-# =========================================================
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}请使用 root 权限运行${NC}" >&2
-    exit 1
-fi
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# 如果已经安装 CLI 入口 → 直接执行它（弹出菜单）
-if [[ -x "$MIHOMO_CLI" && -f "$CONF_FILE" ]]; then
-    exec "$MIHOMO_CLI"
-fi
+if [ "$EUID" -ne 0 ]; then echo -e "${RED}错误: 请使用 root 权限运行此脚本！${NC}"; exit 1; fi
+if [ "$(basename "$0")" == "mihomo" ]; then echo -e "${RED}[错误] 脚本名不能为 'mihomo'。${NC}"; exit 1; fi
+
+# =========================================================
+# 2. 拦截检测
+# =========================================================
+if [ -f "$CORE_BIN" ] && [ -f "$MIHOMO_BIN" ]; then bash "$MIHOMO_BIN"; exit 0; fi
 
 clear
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}     Mihomo 裸核网关一键部署（CLI 版）    ${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-# 日志开始
-exec 1> >(tee -a "$LOG_FILE") 2>&1
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 安装开始"
+echo -e "${BLUE}#################################################${NC}"
+echo -e "${BLUE}#   Mihomo 裸核网关 (全库补全 + Notify版)       #${NC}"
+echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
-# 1. 系统依赖
+# 3. 环境与依赖
 # =========================================================
-echo -e "\n${YELLOW}>>> [1/7] 安装依赖${NC}"
-PACKAGES="curl tar gzip unzip jq nano bc coreutils"
-if [[ -f /etc/debian_version ]]; then
-    apt update -qq && apt install -yqq $PACKAGES
-elif [[ -f /etc/alpine-release ]]; then
-    apk add --no-cache $PACKAGES bash grep
-else
-    echo -e "${RED}不支持的系统发行版${NC}" >&2
-    exit 1
-fi
-
-# 开启 IP 转发
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null || \
-    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+echo -e "\n${YELLOW}>>> [1/5] 安装必要组件与系统调优...${NC}"
+PACKAGES="curl gzip tar nano unzip jq"
+if [ -f /etc/debian_version ]; then apt update -q && apt install -y $PACKAGES -q; elif [ -f /etc/alpine-release ]; then apk add $PACKAGES bash grep; fi
+if ! sysctl net.ipv4.ip_forward | grep -q "1"; then echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf; sysctl -p >/dev/null 2>&1; fi
 
 # =========================================================
-# 2. 下载最新 Mihomo 核心（支持国内加速镜像）
+# 4. 核心与全量数据库拉取 (✅ 新增 ASN 和 Geo 数据源)
 # =========================================================
-echo -e "\n${YELLOW}>>> [2/7] 下载最新 Mihomo 核心${NC}"
-
+echo -e "\n${YELLOW}>>> [2/5] 下载核心与 Geo 数据库(IP/ASN/Site)...${NC}"
+GH_PROXY="https://gh-proxy.com/"
 ARCH=$(uname -m)
+MIHOMO_VER="v1.18.1"
+BASE_URL="${GH_PROXY}https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VER}"
+
 case $ARCH in
-    x86_64)  ARCH_SUFFIX="amd64" ;;
-    aarch64) ARCH_SUFFIX="arm64" ;;
-    *) echo -e "${RED}不支持的架构: $ARCH${NC}"; exit 1 ;;
+    x86_64) DL_URL="${BASE_URL}/mihomo-linux-amd64-${MIHOMO_VER}.gz" ;;
+    aarch64) DL_URL="${BASE_URL}/mihomo-linux-arm64-${MIHOMO_VER}.gz" ;;
+    *) echo -e "${RED}不支持架构: $ARCH${NC}"; exit 1 ;;
 esac
 
-# 自动获取最新版本
-LATEST_TAG=$(curl -sL --max-time 15 \
-    "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" | \
-    jq -r '.tag_name' || echo "v1.18.10")
+curl -L -o /tmp/mihomo.gz "$DL_URL" && gzip -d /tmp/mihomo.gz
+mv /tmp/mihomo "$CORE_BIN" && chmod +x "$CORE_BIN"
+mkdir -p "$CONF_DIR/ui"
 
-if [[ $LATEST_TAG == "null" || -z $LATEST_TAG ]]; then
-    echo -e "${YELLOW}获取最新版本失败，使用 fallback v1.18.10${NC}"
-    LATEST_TAG="v1.18.10"
-fi
-
-echo "将使用版本: ${LATEST_TAG}"
-
-# 国内加速镜像列表（按优先级排序，支持自动 fallback，优先 https://ghproxy.net）
-MIRRORS=(
-    "https://ghps.cc/"
-    "https://gh.ddlc.top/"
-    ""  # 空字符串表示直连 GitHub
-)
-
-# 原始 URL
-ORIG_BASE_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}"
-ORIG_FILE_NAME="mihomo-linux-${ARCH_SUFFIX}-${LATEST_TAG}.gz"
-
-# 下载函数（尝试每个镜像）
-download_with_mirrors() {
-    local url_path="$1"
-    local output="$2"
-    for mirror in "${MIRRORS[@]}"; do
-        local full_url="${mirror}${url_path}"
-        echo -e "${CYAN}尝试下载: ${full_url}${NC}"
-        if curl --fail --location --max-time 60 -o "$output" "$full_url"; then
-            echo -e "${GREEN}下载成功，使用镜像: ${mirror}${NC}"
-            return 0
-        fi
-        echo -e "${YELLOW}此镜像失败，尝试下一个...${NC}"
-    done
-    echo -e "${RED}所有镜像下载失败，请检查网络${NC}"
-    exit 1
-}
-
-# 下载核心
-download_with_mirrors "${ORIG_BASE_URL}/${ORIG_FILE_NAME}" "/tmp/mihomo.gz"
-
-gzip -dc /tmp/mihomo.gz > /tmp/mihomo-core
-install -m 755 /tmp/mihomo-core "$CORE_BIN"
-rm -f /tmp/mihomo*
-
-# 地理数据库（同样用镜像下载）
-ORIG_GEO_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
-download_with_mirrors "$ORIG_GEO_URL" "$CONF_DIR/Country.mmdb"
-
-mkdir -p "$CONF_DIR/ui"  # 预留给未来 Dashboard，如果需要
+# 下载核心数据库
+curl -sL -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
+curl -sL -o "$CONF_DIR/geosite.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+curl -sL -o "$CONF_DIR/geoip.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
+# 解决 log 中的 IP-ASN 报错
+curl -sL -o "$CONF_DIR/GeoLite2-ASN.mmdb" "${GH_PROXY}https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb"
 
 # =========================================================
-# 3. 用户配置
+# 5. 生成自动更新脚本 (✅ 新增配置注入)
 # =========================================================
-echo -e "\n${YELLOW}>>> [3/7] 配置订阅与通知${NC}"
-read -rp "订阅链接: " SUB_URL
-read -rp "自动更新间隔(分钟, 默认 60): " SUB_INTERVAL
-read -rp "Notify 接口地址 (留空禁用): " NOTIFY_URL
-
-SUB_INTERVAL=${SUB_INTERVAL:-60}
-: "${NOTIFY_URL:=""}"
-
-mkdir -p "$CONF_DIR"
-cat > "$SUB_INFO_FILE" <<EOF
-SUB_URL="$SUB_URL"
-SUB_INTERVAL="$SUB_INTERVAL"
-NOTIFY_URL="$NOTIFY_URL"
-EOF
-
-# =========================================================
-# 4. 生成辅助脚本
-# =========================================================
-echo -e "\n${YELLOW}>>> [4/7] 生成辅助脚本${NC}"
-
-# 通知脚本
-cat > "$NOTIFY_SCRIPT" <<'EOF'
-#!/bin/bash
-source /etc/mihomo/.subscription_info
-[ -z "$NOTIFY_URL" ] && exit 0
-[ -f /tmp/.mihomo_mute_notify ] && exit 0
-
-TIME=$(date '+%Y-%m-%d %H:%M:%S')
-curl -s -m 8 -X POST "$NOTIFY_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"title\":\"Mihomo - $1\",\"content\":\"$2\n\n时间: $TIME\"}" >/dev/null 2>&1
-EOF
-chmod +x "$NOTIFY_SCRIPT"
-
-# 更新脚本
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
-set -euo pipefail
-source /etc/mihomo/.subscription_info
-CONF="/etc/mihomo/config.yaml"
-TMP="${CONF}.tmp"
-NOTIFY="/usr/local/bin/mihomo-notify.sh"
+CONF_DIR="/etc/mihomo"
+CONF_FILE="$CONF_DIR/config.yaml"
+SUB_INFO_FILE="$CONF_DIR/.subscription_info"
 
-curl -s --max-time 30 -o "$TMP" "$SUB_URL" || exit 0
+send_notify() {
+    if [ -z "$NOTIFY_URL" ]; then return; fi
+    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$2\"}" > /dev/null 2>&1
+}
 
-if grep -qE 'proxies:|proxy-providers:' "$TMP"; then
-    if cmp -s "$CONF" "$TMP"; then
-        rm -f "$TMP"
-        exit 0
+if [ -f "$SUB_INFO_FILE" ]; then source "$SUB_INFO_FILE"; else exit 1; fi
+if [ -z "$SUB_URL" ]; then exit 1; fi
+
+echo ">>> [后台] 正在从 $SUB_URL 下载配置..."
+curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
+
+if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
+    # ✅ 强力注入：确保配置包含正确的数据库更新地址，防止内核报错
+    if ! grep -q "^geox-url:" "${CONF_FILE}.tmp"; then
+        cat >> "${CONF_FILE}.tmp" <<INNEREOF
+
+geox-url:
+  mmdb: "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
+  asn: "https://gh-proxy.com/https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb"
+  geosite: "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+  geoip: "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
+INNEREOF
     fi
-    mv "$TMP" "$CONF"
-    touch /tmp/.mihomo_mute_notify
+
+    mv "${CONF_FILE}.tmp" "$CONF_FILE"
     systemctl try-restart mihomo
-    sleep 2
-    rm -f /tmp/.mihomo_mute_notify
-    $NOTIFY "订阅已更新" "配置变更已自动应用"
+    send_notify "Mihomo 更新成功" "配置与Geo库已更新，ASN规则已修复。时间: $(date)"
 else
-    rm -f "$TMP"
-    $NOTIFY "订阅格式异常" "未检测到有效 proxies / proxy-providers"
+    send_notify "Mihomo 更新失败" "无法从 $SUB_URL 获取配置，请检查链接。"
+    rm -f "${CONF_FILE}.tmp"
 fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
-# Watchdog 脚本
-cat > "$WATCHDOG_SCRIPT" <<'EOF'
-#!/bin/bash
-NOTIFY="/usr/local/bin/mihomo-notify.sh"
-[ "$(systemctl is-active mihomo)" != "active" ] && exit 0
+# =========================================================
+# 6. 交互式配置
+# =========================================================
+echo -e "\n${YELLOW}>>> [3/5] 配置订阅与通知...${NC}"
+read -p "请输入订阅链接 (Sub-Store/机场): " USER_URL
+read -p "请输入自动更新间隔 (分钟, 默认60): " USER_INTERVAL
+[ -z "$USER_INTERVAL" ] && USER_INTERVAL=60
 
-# 内存使用率告警
-MEM=$(free | awk '/Mem:/ {printf "%.0f", $3/$2*100}')
-[ "$MEM" -ge 88 ] && $NOTIFY "内存占用过高" "当前使用率 ${MEM}%"
+echo -e "${BLUE}提示: 例如 http://10.10.1.9:18088/api/v1/notify/mihomo (留空则不启用通知)${NC}"
+read -p "请输入 Notify 通知接口地址: " USER_NOTIFY
 
-# 出口连通性检查
-PORT=$(awk '/^mixed-port:/ {print $2}' /etc/mihomo/config.yaml 2>/dev/null || echo 7890)
-CODE=$(curl -s -m 6 -o /dev/null -w "%{http_code}" \
-    -x "http://127.0.0.1:$PORT" "http://www.gstatic.com/generate_204" \
-    || echo "000")
-
-[ "$CODE" != "204" ] && {
-    $NOTIFY "网络出口异常" "连通性检测失败 (code=$CODE)，即将重启"
-    systemctl restart mihomo
-}
-EOF
-chmod +x "$WATCHDOG_SCRIPT"
+echo "SUB_URL=\"$USER_URL\"" > "$SUB_INFO_FILE"
+echo "SUB_INTERVAL=\"$USER_INTERVAL\"" >> "$SUB_INFO_FILE"
+echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 
 # =========================================================
-# 5. 生成 CLI 管理菜单脚本
+# 7. 注册系统服务
 # =========================================================
-echo -e "\n${YELLOW}>>> [5/7] 生成 CLI 管理菜单${NC}"
-
-cat > "$MIHOMO_CLI" <<'EOF'
-#!/bin/bash
-# Mihomo CLI 管理菜单（简单 SSH 操作界面）
-
-RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' NC='\033[0m'
-
-while true; do
-    clear
-    echo -e "${YELLOW}=== Mihomo 管理菜单 ===${NC}"
-    echo "1. 启动服务"
-    echo "2. 停止服务"
-    echo "3. 重启服务"
-    echo "4. 查看服务状态"
-    echo "5. 更新订阅配置"
-    echo "6. 编辑配置文件"
-    echo "7. 查看服务日志"
-    echo "8. 运行 Watchdog 检查"
-    echo "9. 发送测试通知"
-    echo "0. 退出菜单"
-    read -rp "选择选项: " choice
-
-    case $choice in
-        1) systemctl start mihomo && echo -e "${GREEN}服务已启动${NC}" ;;
-        2) systemctl stop mihomo && echo -e "${GREEN}服务已停止${NC}" ;;
-        3) systemctl restart mihomo && echo -e "${GREEN}服务已重启${NC}" ;;
-        4) systemctl status mihomo ;;
-        5) /usr/local/bin/mihomo-update.sh && echo -e "${GREEN}订阅已更新${NC}" ;;
-        6) nano /etc/mihomo/config.yaml && systemctl restart mihomo ;;
-        7) journalctl -u mihomo -f ;;
-        8) /usr/local/bin/mihomo-watchdog.sh && echo -e "${GREEN}Watchdog 检查完成${NC}" ;;
-        9) /usr/local/bin/mihomo-notify.sh "测试通知" "这是一个测试消息" && echo -e "${GREEN}测试通知已发送${NC}" ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效选项，按任意键返回${NC}" ;;
-    esac
-    read -rp "按任意键继续..."
-done
-EOF
-chmod +x "$MIHOMO_CLI"
-
-# =========================================================
-# 6. systemd 服务 & 定时任务
-# =========================================================
-echo -e "\n${YELLOW}>>> [6/7] 注册 systemd 服务${NC}"
-
+echo -e "\n${YELLOW}>>> [4/5] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Mihomo (MetaCubeX) Service
-After=network-online.target
-Wants=network-online.target
+Description=Mihomo Daemon
+After=network.target
 
 [Service]
 Type=simple
-ExecStart=$CORE_BIN -d $CONF_DIR -f $CONF_FILE
+User=root
 Restart=always
-RestartSec=3
-LimitNOFILE=65535
+ExecStart=$CORE_BIN -d $CONF_DIR -f $CONF_FILE
+ExecStopPost=/usr/bin/bash -c 'source $SUB_INFO_FILE; if [ "\$EXIT_STATUS" != "0" ] && [ -n "\$NOTIFY_URL" ]; then curl -s --max-time 5 -X POST "\$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 运行异常\", \"content\":\"内核崩溃，退出码: \$EXIT_STATUS\"}"; fi'
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-Environment="HOME=/root"
-ExecStartPost=/bin/bash -c 'sleep 3 && [ ! -f /tmp/.mihomo_mute_notify ] && $NOTIFY_SCRIPT "Mihomo 已启动" "服务运行正常"'
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/mihomo-update.timer <<EOF
+[Unit]
+Description=Timer for Mihomo Update
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${USER_INTERVAL}min
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > /etc/systemd/system/mihomo-update.service <<EOF
+[Unit]
+Description=Auto Update Mihomo Config
+[Service]
+Type=oneshot
+ExecStart=$UPDATE_SCRIPT
+EOF
+
 systemctl daemon-reload
-systemctl enable --now mihomo
+bash "$UPDATE_SCRIPT"
+systemctl enable --now mihomo-update.timer
 
 # =========================================================
-# 7. 首次更新 & 完成
+# 8. 全能管理菜单 (✅ 新增内存显示)
 # =========================================================
-echo -e "\n${YELLOW}>>> [7/7] 首次更新配置 & 启动${NC}"
-bash "$UPDATE_SCRIPT" || true
+echo -e "\n${YELLOW}>>> [5/5] 生成管理菜单...${NC}"
 
-"$NOTIFY_SCRIPT" "部署完成" "Mihomo 已安装并启动\n版本: $LATEST_TAG\n更新间隔: ${SUB_INTERVAL}分钟"
+cat > "$MIHOMO_BIN" <<'EOF'
+#!/bin/bash
+CORE_BIN="/usr/local/bin/mihomo-core"
+CONF_DIR="/etc/mihomo"
+SERVICE_FILE="/etc/systemd/system/mihomo.service"
+SUB_INFO_FILE="$CONF_DIR/.subscription_info"
+UPDATE_SCRIPT="/usr/local/bin/mihomo-update.sh"
+UI_URL="https://gh-proxy.com/https://github.com/Zephyruso/zashboard/archive/refs/heads/gh-pages.zip"
 
-echo -e "\n${GREEN}部署完成！核心版本：${LATEST_TAG}${NC}"
-echo -e "管理命令：  ${CYAN}mihomo${NC}  （输入此命令弹出菜单）"
-echo -e "配置文件：  ${CYAN}$CONF_FILE${NC}"
-echo -e "查看日志：  ${CYAN}journalctl -u mihomo -f${NC}"
-echo -e "安装日志：  ${CYAN}$LOG_FILE${NC}\n"
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# 清理安装脚本（可选）
-rm -f "$0"
+check_status() {
+    IP=$(hostname -I | awk '{print $1}')
+    [ -z "$IP" ] && IP="<IP>"
+    if systemctl is-active --quiet mihomo; then
+        MEM=$(ps -o rss= -p $(pidof mihomo-core) | awk '{printf "%.1fMB", $1/1024}')
+        echo -e "状态: ${GREEN}● 运行中${NC} (内存占用: ${YELLOW}${MEM}${NC})"
+        echo -e "面板: ${GREEN}http://${IP}:9090/ui${NC}"
+    else
+        echo -e "状态: ${RED}● 已停止${NC}"
+    fi
+}
 
-# 进入管理菜单
-exec "$MIHOMO_CLI"
+update_ui() {
+    echo -e "\n${YELLOW}>>> 重装 Zashboard 面板${NC}"
+    curl -L -o /tmp/ui.zip "$UI_URL"
+    if [ $? -eq 0 ]; then
+        rm -rf "$CONF_DIR/ui"/*
+        unzip -q -o /tmp/ui.zip -d /tmp/ui_extract
+        cp -r /tmp/ui_extract/*/* "$CONF_DIR/ui/"
+        rm -rf /tmp/ui.zip /tmp/ui_extract
+        echo -e "${GREEN}面板已更新。${NC}"
+    fi
+    if [ "$1" != "auto" ]; then read -p "按回车返回..."; fi
+}
+
+change_notify() {
+    source "$SUB_INFO_FILE"
+    echo -e "\n${YELLOW}>>> 当前 Notify 接口: ${NC}${NOTIFY_URL:-未配置}"
+    read -p "请输入新的 Notify 接口地址 (留空则清除): " NEW_NOTIFY
+    sed -i '/NOTIFY_URL=/d' "$SUB_INFO_FILE"
+    echo "NOTIFY_URL=\"$NEW_NOTIFY\"" >> "$SUB_INFO_FILE"
+    echo -e "${GREEN}通知接口已更新。${NC}"
+    read -p "按回车返回..."
+}
+
+while true; do
+    clear
+    echo -e "${BLUE}########################################${NC}"
+    echo -e "${BLUE}#      Mihomo 管理面板 (Zashboard)     #${NC}"
+    echo -e "${BLUE}########################################${NC}"
+    check_status
+    echo ""
+    echo -e "1. ${GREEN}启动${NC}  2. ${RED}停止${NC}  3. ${YELLOW}重启${NC}  4. 查看日志"
+    echo "----------------------------------------"
+    echo -e "5. 切换配置文件"
+    echo -e "6. 立即更新订阅配置"
+    echo -e "7. 重装 Web 面板"
+    echo -e "8. ${YELLOW}修改 Notify 通知接口${NC}"
+    echo "----------------------------------------"
+    echo -e "9. ${RED}卸载 Mihomo${NC}"
+    echo -e "0. 退出"
+    echo ""
+    read -p "选择: " choice
+    case $choice in
+        1) systemctl start mihomo ;;
+        2) systemctl stop mihomo ;;
+        3) systemctl restart mihomo ;;
+        4) journalctl -u mihomo -f -n 50 ;;
+        5) 
+            files=($(ls $CONF_DIR/*.yaml 2>/dev/null))
+            for i in "${!files[@]}"; do echo "$i) $(basename "${files[$i]}")"; done
+            read -p "选择序号: " idx
+            if [ -n "${files[$idx]}" ]; then
+                sed -i "s|ExecStart=.*|ExecStart=$CORE_BIN -d $CONF_DIR -f ${files[$idx]}|g" $SERVICE_FILE
+                systemctl daemon-reload && systemctl restart mihomo
+            fi ;;
+        6) bash "$UPDATE_SCRIPT" ; read -p "按回车返回..." ;;
+        7) update_ui ;;
+        8) change_notify ;;
+        9) systemctl stop mihomo; systemctl disable mihomo; rm -rf /etc/mihomo /usr/local/bin/mihomo* /etc/systemd/system/mihomo*; systemctl daemon-reload; exit 0 ;;
+        0) exit 0 ;;
+    esac
+done
+EOF
+chmod +x "$MIHOMO_BIN"
+
+# --- 9. 完成 ---
+source "$SUB_INFO_FILE"
+if [ -n "$NOTIFY_URL" ]; then
+    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 部署完成\", \"content\":\"安装及全库修复已成功执行完毕。\"}" > /dev/null 2>&1
+fi
+
+echo -e "\n${GREEN}安装完成！${NC}"
+bash -c "source $MIHOMO_BIN; update_ui auto >/dev/null 2>&1"
+sleep 1
+bash "$MIHOMO_BIN"

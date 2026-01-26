@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 全能部署脚本
+# Mihomo 部署脚本
 # =========================================================
 
-# --- 1. 全局变量与配置 ---
+# --- 1. 全局变量 ---
 MIHOMO_BIN="/usr/local/bin/mihomo"
 CORE_BIN="/usr/local/bin/mihomo-core"
 UPDATE_SCRIPT="/usr/local/bin/mihomo-update.sh"
@@ -12,9 +12,6 @@ CONF_DIR="/etc/mihomo"
 CONF_FILE="$CONF_DIR/config.yaml"
 SUB_INFO_FILE="$CONF_DIR/.subscription_info"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
-
-# ---> 【通知配置区】 <---
-NOTIFY_URL="http://10.10.1.9:18088/api/v1/notify/mihomo"
 
 # --- 颜色定义 ---
 RED='\033[0;31m'
@@ -43,7 +40,7 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#      Mihomo 裸核网关 (集成 Notify 通知)       #${NC}"
+echo -e "${BLUE}#      Mihomo 裸核网关 (交互式 Notify 通知)     #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -60,10 +57,6 @@ fi
 if ! sysctl net.ipv4.ip_forward | grep -q "1"; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
     sysctl -p >/dev/null 2>&1
-fi
-
-if [ ! -c /dev/net/tun ]; then
-    echo -e "${RED}[警告] TUN 设备未就绪，这可能导致部分功能失效。${NC}"
 fi
 
 # =========================================================
@@ -88,45 +81,60 @@ mkdir -p "$CONF_DIR/ui"
 curl -sL -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
 
 # =========================================================
-# 5. 生成自动更新脚本 (含 Notify 推送逻辑)
+# 5. 生成自动更新脚本 (防卡死机制 + 动态读取配置)
 # =========================================================
-cat > "$UPDATE_SCRIPT" <<EOF
+cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
-CONF_DIR="$CONF_DIR"
-CONF_FILE="$CONF_FILE"
-SUB_INFO_FILE="$SUB_INFO_FILE"
-NOTIFY_URL="$NOTIFY_URL"
+CONF_DIR="/etc/mihomo"
+CONF_FILE="$CONF_DIR/config.yaml"
+SUB_INFO_FILE="$CONF_DIR/.subscription_info"
 
 send_notify() {
-    curl -s -X POST "\$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"\$1\", \"content\":\"\$2\"}" > /dev/null 2>&1
+    # 如果没配置 NOTIFY_URL，直接跳过
+    if [ -z "$NOTIFY_URL" ]; then return; fi
+    # 设置 5秒超时，防止网络不通卡死
+    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$2\"}" > /dev/null 2>&1
 }
 
-if [ -f "\$SUB_INFO_FILE" ]; then source "\$SUB_INFO_FILE"; else exit 1; fi
+if [ -f "$SUB_INFO_FILE" ]; then source "$SUB_INFO_FILE"; else exit 1; fi
+if [ -z "$SUB_URL" ]; then exit 1; fi
 
-curl -L -s -o "\${CONF_FILE}.tmp" "\$SUB_URL"
-if [ \$? -eq 0 ] && [ -s "\${CONF_FILE}.tmp" ]; then
-    mv "\${CONF_FILE}.tmp" "\$CONF_FILE"
-    # 重启服务，只有当服务已加载时才生效
+echo ">>> [后台] 正在从 $SUB_URL 下载配置..."
+# 设置 30秒下载超时
+curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
+
+if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
+    echo ">>> [后台] 配置下载成功，正在应用并发送通知..."
+    mv "${CONF_FILE}.tmp" "$CONF_FILE"
     systemctl try-restart mihomo
-    send_notify "Mihomo 订阅更新成功" "节点数据已更新并重启服务。时间: \$(date)"
+    send_notify "Mihomo 订阅更新成功" "节点数据已更新并重启服务。时间: $(date)"
 else
-    send_notify "Mihomo 订阅更新失败" "无法从 \$SUB_URL 获取配置，请检查链接。"
-    rm -f "\${CONF_FILE}.tmp"
+    echo ">>> [后台] ❌ 配置下载超时或失败！正在发送报错通知..."
+    send_notify "Mihomo 订阅更新失败" "无法从 $SUB_URL 获取配置，请检查链接。"
+    rm -f "${CONF_FILE}.tmp"
 fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 配置订阅与服务注册 (✅已修复执行顺序)
+# 6. 交互式配置订阅与通知
 # =========================================================
-echo -e "\n${YELLOW}>>> [3/5] 配置订阅...${NC}"
+echo -e "\n${YELLOW}>>> [3/5] 配置订阅与通知...${NC}"
 read -p "请输入订阅链接 (Sub-Store/机场): " USER_URL
 read -p "请输入自动更新间隔 (分钟, 默认60): " USER_INTERVAL
 [ -z "$USER_INTERVAL" ] && USER_INTERVAL=60
 
+# --- 新增：提示输入 Notify 地址 ---
+echo -e "${BLUE}提示: 例如 http://10.10.1.9:18088/api/v1/notify/mihomo (留空则不启用通知)${NC}"
+read -p "请输入 Notify 通知接口地址: " USER_NOTIFY
+
 echo "SUB_URL=\"$USER_URL\"" > "$SUB_INFO_FILE"
 echo "SUB_INTERVAL=\"$USER_INTERVAL\"" >> "$SUB_INFO_FILE"
+echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 
+# =========================================================
+# 7. 注册 Systemd 服务 (含动态通知读取)
+# =========================================================
 echo -e "\n${YELLOW}>>> [4/5] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -138,7 +146,8 @@ Type=simple
 User=root
 Restart=always
 ExecStart=$CORE_BIN -d $CONF_DIR -f $CONF_FILE
-ExecStopPost=/usr/bin/bash -c 'if [ "\$EXIT_STATUS" != "0" ]; then curl -s -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 运行异常\", \"content\":\"内核崩溃或意外退出，退出码: \$EXIT_STATUS\"}"; fi'
+# 动态加载配置文件并发送通知（同样设置了5秒超时）
+ExecStopPost=/usr/bin/bash -c 'source $SUB_INFO_FILE; if [ "\$EXIT_STATUS" != "0" ] && [ -n "\$NOTIFY_URL" ]; then curl -s --max-time 5 -X POST "\$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 运行异常\", \"content\":\"内核崩溃或意外退出，退出码: \$EXIT_STATUS\"}"; fi'
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 
@@ -164,17 +173,13 @@ Type=oneshot
 ExecStart=$UPDATE_SCRIPT
 EOF
 
-# 先加载系统配置
+# 按正确的时序：先重载 -> 再执行首次更新 -> 最后启动定时器
 systemctl daemon-reload
-
-# 然后再执行首次更新（此时 mihomo.service 已注册，update 脚本内的 restart 不会报错）
 bash "$UPDATE_SCRIPT"
-
-# 启动定时器
 systemctl enable --now mihomo-update.timer
 
 # =========================================================
-# 7. 写入全能管理菜单
+# 8. 写入全能管理菜单
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/5] 生成管理菜单...${NC}"
 
@@ -217,6 +222,16 @@ update_ui() {
     if [ "$1" != "auto" ]; then read -p "按回车返回..."; fi
 }
 
+change_notify() {
+    source "$SUB_INFO_FILE"
+    echo -e "\n${YELLOW}>>> 当前 Notify 接口: ${NC}${NOTIFY_URL:-未配置}"
+    read -p "请输入新的 Notify 接口地址 (留空则清除): " NEW_NOTIFY
+    sed -i '/NOTIFY_URL=/d' "$SUB_INFO_FILE"
+    echo "NOTIFY_URL=\"$NEW_NOTIFY\"" >> "$SUB_INFO_FILE"
+    echo -e "${GREEN}通知接口已更新。${NC}"
+    read -p "按回车返回..."
+}
+
 while true; do
     clear
     echo -e "${BLUE}########################################${NC}"
@@ -229,6 +244,8 @@ while true; do
     echo -e "5. 切换配置文件"
     echo -e "6. 立即更新订阅配置"
     echo -e "7. 重装 Web 面板"
+    echo -e "8. ${YELLOW}修改 Notify 通知接口${NC}"
+    echo "----------------------------------------"
     echo -e "9. ${RED}卸载 Mihomo${NC}"
     echo -e "0. 退出"
     echo ""
@@ -248,6 +265,7 @@ while true; do
             fi ;;
         6) bash "$UPDATE_SCRIPT" ; read -p "按回车返回..." ;;
         7) update_ui ;;
+        8) change_notify ;;
         9) systemctl stop mihomo; systemctl disable mihomo; rm -rf /etc/mihomo /usr/local/bin/mihomo* /etc/systemd/system/mihomo*; systemctl daemon-reload; exit 0 ;;
         0) exit 0 ;;
     esac
@@ -255,10 +273,13 @@ done
 EOF
 chmod +x "$MIHOMO_BIN"
 
-# --- 8. 完成通知 ---
-curl -s -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 部署完成\", \"content\":\"安装脚本已成功在 $(hostname) 执行完毕。\"}" > /dev/null 2>&1
+# --- 9. 完成与最后一次通知 ---
+source "$SUB_INFO_FILE"
+if [ -n "$NOTIFY_URL" ]; then
+    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"Mihomo 部署完成\", \"content\":\"安装脚本已成功在 $(hostname) 执行完毕。\"}" > /dev/null 2>&1
+fi
 
-echo -e "\n${GREEN}安装完成！已发送部署完成通知。${NC}"
+echo -e "\n${GREEN}安装完成！${NC}"
 bash -c "source $MIHOMO_BIN; update_ui auto >/dev/null 2>&1"
 sleep 1
 bash "$MIHOMO_BIN"

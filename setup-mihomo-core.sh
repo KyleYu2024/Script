@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本
+# Mihomo 部署脚本 (极简稳定版 - 通知排版优化)
 # =========================================================
 
 # --- 1. 全局配置 ---
@@ -102,19 +102,19 @@ echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 # =========================================================
 echo -e "\n${YELLOW}>>> [4/7] 部署监控与更新系统...${NC}"
 
-# A. 通知函数 (【核心修复】：时间生成移入脚本内部，100%保证时间准确)
+# A. 通知函数 (增加 JSON 换行符，文案去句号)
 cat > "$NOTIFY_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
 if [ -n "$NOTIFY_URL" ]; then
     CURRENT_TIME=$(date "+%Y-%m-%d %H:%M:%S")
-    FULL_CONTENT="$2 时间: $CURRENT_TIME"
-    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$FULL_CONTENT\"}" > /dev/null 2>&1
+    # 使用 \n 换行
+    curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$2\\n时间: $CURRENT_TIME\"}" > /dev/null 2>&1
 fi
 EOF
 chmod +x "$NOTIFY_SCRIPT"
 
-# B. Watchdog 监控脚本
+# B. Watchdog 监控脚本 (文案去句号)
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
@@ -123,7 +123,7 @@ if ! systemctl is-active --quiet mihomo; then exit 0; fi
 
 MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
 if [ "$MEM_USAGE" -ge 85 ]; then
-    $NOTIFY "⚠️ 内存占用过高" "当前内存占用已达 $MEM_USAGE%，可能会影响服务运行。"
+    $NOTIFY "⚠️ 内存占用过高" "当前内存占用已达 $MEM_USAGE%，可能会影响服务运行"
 fi
 
 PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -d '\r')
@@ -132,13 +132,13 @@ PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -x "http://127.0.0.1:$PROXY_PORT" --max-time 5 "http://cp.cloudflare.com/generate_204")
 
 if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "200" ]; then
-    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，正在尝试重启服务以恢复网络。"
+    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，正在尝试重启服务以恢复网络"
     systemctl restart mihomo
 fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 自动更新脚本 (由于去除了切换功能，现在死锁定 config.yaml)
+# C. 自动更新脚本 (文案去句号)
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -161,20 +161,20 @@ if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
         systemctl try-restart mihomo
         rm -f /tmp/.mihomo_mute_notify
         
-        $NOTIFY "🔄 订阅配置已更新" "检测到配置变更，已应用并重启服务。"
+        $NOTIFY "🔄 订阅配置已更新" "检测到配置变更，已应用并重启服务"
     else
-        $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚。"
+        $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚"
         rm -f "${CONF_FILE}.tmp"
     fi
 else
-    $NOTIFY "❌ 订阅下载失败" "无法从订阅源获取配置 (网络超时或链接失效)。"
+    $NOTIFY "❌ 订阅下载失败" "无法从订阅源获取配置 (网络超时或链接失效)"
     rm -f "${CONF_FILE}.tmp"
 fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (修复异常判断)
+# 6. 注册 Systemd 服务 (文案去句号)
 # =========================================================
 echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
@@ -186,15 +186,14 @@ After=network.target
 Type=simple
 User=root
 Restart=always
-# 【核心修复】：定义 SIGTERM (15) 和 143 为正常退出状态
 SuccessExitStatus=0 15 143
 ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
 
 # 启动通知
-ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启。"; fi'
+ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启"; fi'
 
-# 停止通知 (现在 Systemd 能准确区分手动停止和崩溃了)
-ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 异常退出" "内核意外崩溃！退出码: $EXIT_CODE ($EXIT_STATUS)。"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止。"; fi'
+# 停止通知
+ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 异常退出" "内核意外崩溃！退出码: $EXIT_CODE ($EXIT_STATUS)"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止"; fi'
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -242,7 +241,7 @@ EOF
 systemctl daemon-reload
 
 # =========================================================
-# 7. 全能管理菜单 (精简版)
+# 7. 全能管理菜单
 # =========================================================
 echo -e "\n${YELLOW}>>> [6/7] 生成管理菜单...${NC}"
 
@@ -388,8 +387,8 @@ chmod +x "$MIHOMO_BIN"
 # =========================================================
 echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
-# 发送第一条 "已上线" 通知
-/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用。"
+# 发送第一条 "已上线" 通知 (文案去句号)
+/usr/local/bin/mihomo-notify.sh "✅ Mihomo 已部署完成" "自动更新与网络监控已启用"
 
 # 执行首次配置拉取
 bash "$UPDATE_SCRIPT" 

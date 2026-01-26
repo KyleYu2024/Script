@@ -259,6 +259,9 @@ EOF
 chmod +x "$MIHOMO_BIN"
 
 # --- 8. 首次启动初始化 ---
+# 先重载 Systemd，消除警告
+systemctl daemon-reload
+
 echo -e "\n${YELLOW}>>> 正在拉取首次订阅配置...${NC}"
 bash "$UPDATE_SCRIPT"
 

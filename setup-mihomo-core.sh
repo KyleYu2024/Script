@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 部署脚本 (增强纠错自愈版)
+# Mihomo 部署脚本 (极简稳定版 - 通知排版优化)
 # =========================================================
 
 # --- 1. 全局配置 ---
@@ -20,12 +20,17 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-# --- 权限检查 ---
+# --- 权限与环境检查 ---
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}错误: 请使用 root 权限运行此脚本！${NC}"
   exit 1
+fi
+if [ "$(basename "$0")" == "mihomo" ]; then
+    echo -e "${RED}[错误] 脚本名不能为 'mihomo'，请重命名为 install.sh 后重试。${NC}"
+    exit 1
 fi
 
 # 拦截检测：若已安装直接进入管理菜单
@@ -36,13 +41,13 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#      Mihomo 裸核网关 (全自动纠错自愈版)       #${NC}"
+echo -e "${BLUE}#     Mihomo 裸核网关 (自动更新与状态监控)      #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
 # 2. 环境与依赖安装
 # =========================================================
-echo -e "\n${YELLOW}>>> [1/7] 安装系统依赖与网络优化...${NC}"
+echo -e "\n${YELLOW}>>> [1/7] 安装系统依赖...${NC}"
 PACKAGES="curl gzip tar nano unzip jq gawk bc"
 if [ -f /etc/debian_version ]; then
     apt update -q && apt install -y $PACKAGES -q
@@ -80,7 +85,7 @@ curl -sL -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/me
 # =========================================================
 # 4. 交互式配置
 # =========================================================
-echo -e "\n${YELLOW}>>> [3/7] 配置参数...${NC}"
+echo -e "\n${YELLOW}>>> [3/7] 配置订阅与通知...${NC}"
 read -p "请输入订阅链接 (Sub-Store/机场): " USER_URL
 read -p "请输入自动更新间隔 (分钟, 默认60): " USER_INTERVAL
 [ -z "$USER_INTERVAL" ] && USER_INTERVAL=60
@@ -93,62 +98,47 @@ echo "SUB_INTERVAL=\"$USER_INTERVAL\"" >> "$SUB_INFO_FILE"
 echo "NOTIFY_URL=\"$USER_NOTIFY\"" >> "$SUB_INFO_FILE"
 
 # =========================================================
-# 5. 核心脚本生成 (通知、高强度监控、更新)
+# 5. 核心脚本生成 (通知、监控、更新)
 # =========================================================
+echo -e "\n${YELLOW}>>> [4/7] 部署监控与更新系统...${NC}"
 
-# A. 通知脚本
+# A. 通知函数 (增加 JSON 换行符，文案去句号)
 cat > "$NOTIFY_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
 if [ -n "$NOTIFY_URL" ]; then
     CURRENT_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+    # 使用 \n 换行
     curl -s --max-time 5 -X POST "$NOTIFY_URL" -H "Content-Type: application/json" -d "{\"title\":\"$1\", \"content\":\"$2\\n时间: $CURRENT_TIME\"}" > /dev/null 2>&1
 fi
 EOF
 chmod +x "$NOTIFY_SCRIPT"
 
-# B. Watchdog 监控脚本 (含重启虚拟机逻辑)
+# B. Watchdog 监控脚本 (文案去句号)
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
-FAIL_COUNT_FILE="/tmp/mihomo_fail_count"
 
-# 1. 基础服务状态检查
-if ! systemctl is-active --quiet mihomo; then
-    systemctl start mihomo
-    sleep 5
-    if ! systemctl is-active --quiet mihomo; then
-        $NOTIFY "⚠️ 服务启动失败" "正在尝试重载守护进程并重启"
-        systemctl daemon-reload && systemctl restart mihomo
-    fi
+if ! systemctl is-active --quiet mihomo; then exit 0; fi 
+
+MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
+if [ "$MEM_USAGE" -ge 85 ]; then
+    $NOTIFY "⚠️ 内存占用过高" "当前内存占用已达 $MEM_USAGE%，可能会影响服务运行"
 fi
 
-# 2. 网络连通性深度检查
 PROXY_PORT=$(grep "mixed-port" /etc/mihomo/config.yaml | awk '{print $2}' | tr -d '\r')
 [ -z "$PROXY_PORT" ] && PROXY_PORT=7890
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -x "http://127.0.0.1:$PROXY_PORT" --max-time 10 "http://cp.cloudflare.com/generate_204")
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -x "http://127.0.0.1:$PROXY_PORT" --max-time 5 "http://cp.cloudflare.com/generate_204")
 
 if [ "$HTTP_CODE" != "204" ] && [ "$HTTP_CODE" != "200" ]; then
-    COUNT=$(cat $FAIL_COUNT_FILE 2>/dev/null || echo 0)
-    COUNT=$((COUNT + 1))
-    echo $COUNT > $FAIL_COUNT_FILE
-
-    if [ "$COUNT" -ge 3 ]; then
-        $NOTIFY "🚨 终极修复：重启系统" "服务多次自愈无效，系统将在 5 秒后重启"
-        rm -f $FAIL_COUNT_FILE
-        sleep 5
-        sync && reboot
-    else
-        $NOTIFY "🌐 网络异常 ($COUNT/3)" "检测到节点失效，尝试重启服务自愈"
-        systemctl restart mihomo
-    fi
-else
-    echo 0 > $FAIL_COUNT_FILE
+    $NOTIFY "🌐 网络连通性丢失" "所有节点超时，正在尝试重启服务以恢复网络"
+    systemctl restart mihomo
 fi
 EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
-# C. 自动更新脚本
+# C. 自动更新脚本 (文案去句号)
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
 source /etc/mihomo/.subscription_info
@@ -156,34 +146,37 @@ CONF_FILE="/etc/mihomo/config.yaml"
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
 
 curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
+
 if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
     if grep -q "proxies:" "${CONF_FILE}.tmp" || grep -q "proxy-providers:" "${CONF_FILE}.tmp"; then
+        
         if [ -f "$CONF_FILE" ] && cmp -s "$CONF_FILE" "${CONF_FILE}.tmp"; then
             rm -f "${CONF_FILE}.tmp"
             exit 0
         fi
+
         mv "${CONF_FILE}.tmp" "$CONF_FILE"
+        
         touch /tmp/.mihomo_mute_notify
         systemctl try-restart mihomo
         rm -f /tmp/.mihomo_mute_notify
+        
         $NOTIFY "🔄 订阅配置已更新" "检测到配置变更，已应用并重启服务"
     else
-        $NOTIFY "⚠️ 订阅更新异常" "下载成功但格式错误，已回滚"
+        $NOTIFY "⚠️ 订阅更新异常" "下载成功，但配置中无有效节点数据，更新已回滚"
         rm -f "${CONF_FILE}.tmp"
     fi
 else
-    $NOTIFY "❌ 订阅下载失败" "网络超时或链接失效"
+    $NOTIFY "❌ 订阅下载失败" "无法从订阅源获取配置 (网络超时或链接失效)"
     rm -f "${CONF_FILE}.tmp"
 fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
 # =========================================================
-# 6. 注册 Systemd 服务 (含开机自启)
+# 6. 注册 Systemd 服务 (文案去句号)
 # =========================================================
-echo -e "\n${YELLOW}>>> [5/7] 注册系统服务...${NC}"
-
-# 主服务
+echo -e "\n${YELLOW}>>> [5/7] 注册 Systemd 服务...${NC}"
 cat > "$SERVICE_FILE" <<'EOF'
 [Unit]
 Description=Mihomo Daemon
@@ -193,10 +186,14 @@ After=network.target
 Type=simple
 User=root
 Restart=always
-RestartSec=5
+SuccessExitStatus=0 15 143
 ExecStart=/usr/local/bin/mihomo-core -d /etc/mihomo -f /etc/mihomo/config.yaml
-ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务运行正常"; fi'
-ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 异常退出" "内核崩溃！错误码: $EXIT_STATUS"; fi'
+
+# 启动通知
+ExecStartPost=/usr/bin/bash -c 'if [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "✅ Mihomo 服务已启动" "服务已成功启动或重启"; fi'
+
+# 停止通知
+ExecStopPost=/usr/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then /usr/local/bin/mihomo-notify.sh "❌ Mihomo 异常退出" "内核意外崩溃！退出码: $EXIT_CODE ($EXIT_STATUS)"; elif [ ! -f /tmp/.mihomo_mute_notify ]; then /usr/local/bin/mihomo-notify.sh "⏸️ Mihomo 服务已停止" "服务已被正常手动停止"; fi'
 
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
@@ -205,7 +202,7 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 WantedBy=multi-user.target
 EOF
 
-# 更新定时器
+# 配置更新定时器
 cat > /etc/systemd/system/mihomo-update.timer <<EOF
 [Unit]
 Description=Timer for Mihomo Config Update
@@ -215,7 +212,6 @@ OnUnitActiveSec=${USER_INTERVAL}min
 [Install]
 WantedBy=timers.target
 EOF
-
 cat > /etc/systemd/system/mihomo-update.service <<EOF
 [Unit]
 Description=Auto Update Mihomo Config
@@ -224,7 +220,7 @@ Type=oneshot
 ExecStart=$UPDATE_SCRIPT
 EOF
 
-# 监控定时器
+# 定时器：Watchdog 网络连通性检测
 cat > /etc/systemd/system/mihomo-watchdog.timer <<EOF
 [Unit]
 Description=Timer for Mihomo Network Watchdog
@@ -234,7 +230,6 @@ OnUnitActiveSec=3min
 [Install]
 WantedBy=timers.target
 EOF
-
 cat > /etc/systemd/system/mihomo-watchdog.service <<EOF
 [Unit]
 Description=Mihomo Network Watchdog
@@ -246,37 +241,168 @@ EOF
 systemctl daemon-reload
 
 # =========================================================
-# 7. 生成管理菜单
+# 7. 全能管理菜单
 # =========================================================
-# (此处省略部分重复的菜单 UI 代码以保持长度，其核心逻辑与之前一致)
-# ... [生成 $MIHOMO_BIN 脚本的内容] ...
-# 请直接运行脚本获取完整菜单
+echo -e "\n${YELLOW}>>> [6/7] 生成管理菜单...${NC}"
+
+cat > "$MIHOMO_BIN" <<'EOF'
+#!/bin/bash
+CORE_BIN="/usr/local/bin/mihomo-core"
+CONF_DIR="/etc/mihomo"
+SERVICE_FILE="/etc/systemd/system/mihomo.service"
+SUB_INFO_FILE="$CONF_DIR/.subscription_info"
+UPDATE_SCRIPT="/usr/local/bin/mihomo-update.sh"
+UI_URL="https://gh-proxy.com/https://github.com/Zephyruso/zashboard/archive/refs/heads/gh-pages.zip"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# 获取服务状态
+check_status() {
+    IP=$(hostname -I | awk '{print $1}')
+    [ -z "$IP" ] && IP="<IP>"
+
+    if systemctl is-active --quiet mihomo; then
+        echo -e "状态: ${GREEN}● 运行中${NC}"
+        echo -e "面板: ${GREEN}http://${IP}:9090/ui${NC}"
+    else
+        echo -e "状态: ${RED}● 已停止${NC} (按 1 启动)"
+    fi
+    
+    if systemctl is-active --quiet mihomo-watchdog.timer; then
+        echo -e "网络监控: ${GREEN}已启用${NC}"
+    else
+        echo -e "网络监控: ${RED}已禁用${NC}"
+    fi
+}
+
+update_ui() {
+    echo -e "\n${YELLOW}>>> 重装 Zashboard 面板${NC}"
+    curl -L -o /tmp/ui.zip "$UI_URL"
+    if [ $? -eq 0 ]; then
+        rm -rf "$CONF_DIR/ui"/*
+        unzip -q -o /tmp/ui.zip -d /tmp/ui_extract
+        cp -r /tmp/ui_extract/*/* "$CONF_DIR/ui/"
+        rm -rf /tmp/ui.zip /tmp/ui_extract
+        echo -e "${GREEN}面板已更新。${NC}"
+    fi
+    if [ "$1" != "auto" ]; then read -p "按回车返回..."; fi
+}
+
+# 编辑配置文件
+edit_config() {
+    nano /etc/mihomo/config.yaml
+    echo -e "\n${YELLOW}配置文件已保存。${NC}"
+    read -p "是否立即重启服务以应用更改? [y/n]: " confirm
+    if [ "$confirm" == "y" ]; then
+        systemctl restart mihomo
+        echo -e "${GREEN}服务已重启！${NC}"
+    fi
+    sleep 1
+}
+
+# 二次配置修改向导
+modify_config() {
+    source "$SUB_INFO_FILE"
+    while true; do
+        clear
+        echo -e "${BLUE}================ 修改配置参数 =================${NC}"
+        echo -e "1) 订阅链接: ${YELLOW}$SUB_URL${NC}"
+        echo -e "2) 更新频率: ${YELLOW}${SUB_INTERVAL} 分钟${NC}"
+        echo -e "3) 通知接口: ${YELLOW}${NOTIFY_URL:-未配置}${NC}"
+        echo -e "-----------------------------------------------"
+        echo -e "s) ${GREEN}保存并应用${NC}"
+        echo -e "q) 返回主菜单"
+        echo -e "==============================================="
+        read -p "请选择要修改的项目 (1/2/3/s/q): " m_choice
+
+        case $m_choice in
+            1) read -p "请输入新的订阅链接: " SUB_URL ;;
+            2) read -p "请输入新的更新间隔 (分钟): " SUB_INTERVAL ;;
+            3) read -p "请输入新的 Notify 接口地址: " NOTIFY_URL ;;
+            s|S)
+                echo "SUB_URL=\"$SUB_URL\"" > "$SUB_INFO_FILE"
+                echo "SUB_INTERVAL=\"$SUB_INTERVAL\"" >> "$SUB_INFO_FILE"
+                echo "NOTIFY_URL=\"$NOTIFY_URL\"" >> "$SUB_INFO_FILE"
+                cat > /etc/systemd/system/mihomo-update.timer <<EOF2
+[Unit]
+Description=Timer for Mihomo Update
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${SUB_INTERVAL}min
+[Install]
+WantedBy=timers.target
+EOF2
+                systemctl daemon-reload
+                systemctl restart mihomo-update.timer
+                echo -e "${GREEN}配置已保存，定时器已重载。${NC}"
+                sleep 2
+                return ;;
+            q|Q) return ;;
+        esac
+    done
+}
+
+# 主菜单循环
+while true; do
+    clear
+    echo -e "${BLUE}########################################${NC}"
+    echo -e "${BLUE}#           Mihomo 管理面板            #${NC}"
+    echo -e "${BLUE}########################################${NC}"
+    check_status
+    echo ""
+    echo -e "1. ${GREEN}启动${NC}  2. ${RED}停止${NC}  3. ${YELLOW}重启${NC}  4. 查看日志"
+    echo "----------------------------------------"
+    echo -e "5. ${CYAN}编辑配置文件 (nano)${NC}"
+    echo -e "6. 立即更新订阅"
+    echo -e "7. 修改订阅/通知/更新频率"
+    echo -e "8. 重装 Web 面板"
+    echo "----------------------------------------"
+    echo -e "9. ${RED}卸载 Mihomo${NC}"
+    echo -e "0. 退出"
+    echo ""
+    read -p "选择: " choice
+    case $choice in
+        1) systemctl start mihomo ;;
+        2) systemctl stop mihomo ;;
+        3) systemctl restart mihomo ;;
+        4) journalctl -u mihomo -f -n 50 ;;
+        5) edit_config ;;
+        6) bash "$UPDATE_SCRIPT" ; read -p "已触发后台更新，按回车返回..." ;;
+        7) modify_config ;;
+        8) update_ui ;;
+        9) systemctl stop mihomo mihomo-update.timer mihomo-watchdog.timer; systemctl disable mihomo mihomo-update.timer mihomo-watchdog.timer; rm -rf /etc/mihomo /usr/local/bin/mihomo* /etc/systemd/system/mihomo*; systemctl daemon-reload; exit 0 ;;
+        0) exit 0 ;;
+    esac
+done
+EOF
+chmod +x "$MIHOMO_BIN"
 
 # =========================================================
-# 8. 顺序启动与初始通知 (核心逻辑修改点)
+# 8. 完成启动与发送初始通知
 # =========================================================
-echo -e "\n${YELLOW}>>> [7/7] 正在启动服务并发送初始化通知...${NC}"
+echo -e "\n${YELLOW}>>> [7/7] 正在启动并检查服务...${NC}"
 
-# 1. 确保开机自启
-systemctl enable mihomo
-systemctl enable mihomo-update.timer
-systemctl enable mihomo-watchdog.timer
+# 发送第一条 "已上线" 通知 (文案去句号)
+/usr/local/bin/mihomo-notify.sh "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用"
 
-# 2. 发送部署成功通知
-$NOTIFY_SCRIPT "🎉 Mihomo 已部署完成" "自动更新与网络监控已启用"
+# 执行首次配置拉取
+bash "$UPDATE_SCRIPT" 
 
-# 3. 严格等待 3 秒
-echo -e "${CYAN}等待通知队列中 (3s)...${NC}"
-sleep 3
+# 启用并启动各类定时器
+systemctl enable --now mihomo-update.timer
+systemctl enable --now mihomo-watchdog.timer
 
-# 4. 执行首次订阅下载 (此过程会启动并重启 mihomo)
-bash "$UPDATE_SCRIPT"
+# 初始化 Web 面板
+bash -c "source $MIHOMO_BIN; update_ui auto >/dev/null 2>&1"
+sleep 1
 
-# 启动定时器
-systemctl start mihomo-update.timer
-systemctl start mihomo-watchdog.timer
-
-# 自销毁并进入菜单
+# 脚本自我销毁机制
 rm -f "$0"
-echo -e "${GREEN}安装完成！${NC}"
+
+# 进入交互式菜单
 bash "$MIHOMO_BIN"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# Mihomo 全能部署脚本 (Notify + 全库维护 + 极致防卡死版)
+# Mihomo 全能部署脚本 (极速纯净核心版 + Notify通知)
 # =========================================================
 
 # --- 1. 全局变量 ---
@@ -29,7 +29,7 @@ if [ -f "$CORE_BIN" ] && [ -f "$MIHOMO_BIN" ]; then bash "$MIHOMO_BIN"; exit 0; 
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#   Mihomo 裸核网关 (全库补全 + 极致防卡死)     #${NC}"
+echo -e "${BLUE}#   Mihomo 裸核网关 (极速纯净核心 + Notify)     #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # =========================================================
@@ -41,9 +41,9 @@ if [ -f /etc/debian_version ]; then apt update -q && apt install -y $PACKAGES -q
 if ! sysctl net.ipv4.ip_forward | grep -q "1"; then echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf; sysctl -p >/dev/null 2>&1; fi
 
 # =========================================================
-# 4. 核心与全量数据库拉取 (✅ 已加装防卡死与进度提示)
+# 4. 仅下载纯净核心 (✅已移除数据库下载步骤)
 # =========================================================
-echo -e "\n${YELLOW}>>> [2/5] 下载核心与 Geo 数据库...${NC}"
+echo -e "\n${YELLOW}>>> [2/5] 下载 Mihomo 核心...${NC}"
 GH_PROXY="https://gh-proxy.com/"
 ARCH=$(uname -m)
 MIHOMO_VER="v1.18.1"
@@ -55,26 +55,13 @@ case $ARCH in
     *) echo -e "${RED}不支持架构: $ARCH${NC}"; exit 1 ;;
 esac
 
-echo -e "${GREEN}[1/5] 正在下载 Mihomo 核心...${NC}"
-curl -L --max-time 120 -o /tmp/mihomo.gz "$DL_URL" && gzip -d /tmp/mihomo.gz
+echo -e "${GREEN}正在下载核心文件 (带超时防卡死)...${NC}"
+curl -L --max-time 120 -# -o /tmp/mihomo.gz "$DL_URL" && gzip -d /tmp/mihomo.gz
 mv /tmp/mihomo "$CORE_BIN" && chmod +x "$CORE_BIN"
 mkdir -p "$CONF_DIR/ui"
 
-# --- 数据库统一下载 (带 60 秒超时和重试机制) ---
-echo -e "${GREEN}[2/5] 正在下载 Country.mmdb...${NC}"
-curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/Country.mmdb" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
-
-echo -e "${GREEN}[3/5] 正在下载 geosite.dat...${NC}"
-curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/geosite.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-
-echo -e "${GREEN}[4/5] 正在下载 geoip.dat...${NC}"
-curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/geoip.dat" "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip-lite.dat"
-
-echo -e "${GREEN}[5/5] 正在下载 GeoLite2-ASN.mmdb...${NC}"
-curl -L --max-time 60 --retry 2 -# -o "$CONF_DIR/GeoLite2-ASN.mmdb" "${GH_PROXY}https://github.com/xishang0128/geoip/releases/download/latest/GeoLite2-ASN.mmdb"
-
 # =========================================================
-# 5. 生成自动更新脚本
+# 5. 生成自动更新脚本 (✅保留了配置注入，由内核自下载数据库)
 # =========================================================
 cat > "$UPDATE_SCRIPT" <<'EOF'
 #!/bin/bash
@@ -94,6 +81,7 @@ echo ">>> [后台] 正在从 $SUB_URL 下载配置..."
 curl -L -s --max-time 30 -o "${CONF_FILE}.tmp" "$SUB_URL"
 
 if [ $? -eq 0 ] && [ -s "${CONF_FILE}.tmp" ]; then
+    # 这里会自动把数据库下载地址写进配置，Mihomo启动时会自动拉取缺失的库
     if ! grep -q "^geox-url:" "${CONF_FILE}.tmp"; then
         cat >> "${CONF_FILE}.tmp" <<INNEREOF
 
@@ -107,7 +95,7 @@ INNEREOF
 
     mv "${CONF_FILE}.tmp" "$CONF_FILE"
     systemctl try-restart mihomo
-    send_notify "Mihomo 更新成功" "配置与Geo库已更新，ASN规则已修复。时间: $(date)"
+    send_notify "Mihomo 更新成功" "节点已更新。Mihomo将在后台自动完善Geo数据库。时间: $(date)"
 else
     send_notify "Mihomo 更新失败" "无法从 $SUB_URL 获取配置，请检查链接。"
     rm -f "${CONF_FILE}.tmp"

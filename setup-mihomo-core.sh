@@ -2,6 +2,7 @@
 # =========================================================
 # Mihomo 裸核网关一键部署脚本（2025-2026 推荐版，带 CLI 管理菜单）
 # 目标：干净、可靠、可维护、自动跟进最新版 + 简单 SSH CLI 管理
+# 新增：核心下载支持中国国内加速镜像
 # =========================================================
 set -euo pipefail
 
@@ -64,7 +65,7 @@ grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null || \
     echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 
 # =========================================================
-# 2. 下载最新 Mihomo 核心
+# 2. 下载最新 Mihomo 核心（支持国内加速镜像）
 # =========================================================
 echo -e "\n${YELLOW}>>> [2/7] 下载最新 Mihomo 核心${NC}"
 
@@ -87,22 +88,46 @@ fi
 
 echo "将使用版本: ${LATEST_TAG}"
 
-GH_PROXY="https://gh-proxy.com/"
-BASE_URL="${GH_PROXY}https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}"
-FILE_NAME="mihomo-linux-${ARCH_SUFFIX}-${LATEST_TAG}.gz"
+# 国内加速镜像列表（按优先级排序，支持自动 fallback）
+MIRRORS=(
+    "https://mirror.ghproxy.com/"
+    "https://ghproxy.net/https://"
+    "https://ghps.cc/https://"
+    "https://gh.ddlc.top/"
+    ""  # 空字符串表示直连 GitHub
+)
 
-curl --fail --location --max-time 60 -o /tmp/mihomo.gz "${BASE_URL}/${FILE_NAME}" || {
-    echo -e "${RED}下载失败，请检查网络或尝试更换代理${NC}"
+# 原始 URL
+ORIG_BASE_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}"
+ORIG_FILE_NAME="mihomo-linux-${ARCH_SUFFIX}-${LATEST_TAG}.gz"
+
+# 下载函数（尝试每个镜像）
+download_with_mirrors() {
+    local url_path="$1"
+    local output="$2"
+    for mirror in "${MIRRORS[@]}"; do
+        local full_url="${mirror}${url_path}"
+        echo -e "${CYAN}尝试下载: ${full_url}${NC}"
+        if curl --fail --location --max-time 60 -o "$output" "$full_url"; then
+            echo -e "${GREEN}下载成功，使用镜像: ${mirror}${NC}"
+            return 0
+        fi
+        echo -e "${YELLOW}此镜像失败，尝试下一个...${NC}"
+    done
+    echo -e "${RED}所有镜像下载失败，请检查网络${NC}"
     exit 1
 }
+
+# 下载核心
+download_with_mirrors "${ORIG_BASE_URL}/${ORIG_FILE_NAME}" "/tmp/mihomo.gz"
 
 gzip -dc /tmp/mihomo.gz > /tmp/mihomo-core
 install -m 755 /tmp/mihomo-core "$CORE_BIN"
 rm -f /tmp/mihomo*
 
-# 地理数据库
-curl -sL -o "$CONF_DIR/Country.mmdb" \
-    "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
+# 地理数据库（同样用镜像下载）
+ORIG_GEO_URL="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
+download_with_mirrors "$ORIG_GEO_URL" "$CONF_DIR/Country.mmdb"
 
 mkdir -p "$CONF_DIR/ui"  # 预留给未来 Dashboard，如果需要
 

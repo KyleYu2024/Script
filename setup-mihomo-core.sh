@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
-# Mihomo 裸核网关一键部署脚本（2025-2026 推荐版）
-# 目标：干净、可靠、可维护、自动跟进最新版
+# Mihomo 裸核网关一键部署脚本（2025-2026 推荐版，带 CLI 管理菜单）
+# 目标：干净、可靠、可维护、自动跟进最新版 + 简单 SSH CLI 管理
 # =========================================================
 set -euo pipefail
 
@@ -9,8 +9,9 @@ set -euo pipefail
 RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m'
 BLUE='\033[0;34m' CYAN='\033[0;36m' NC='\033[0m'
 
-# 核心路径（统一只用 mihomo 一个名字）
-MIHOMO_BIN="/usr/local/bin/mihomo"
+# 核心路径（内核用 mihomo-core，mihomo 是 CLI 管理入口）
+CORE_BIN="/usr/local/bin/mihomo-core"
+MIHOMO_CLI="/usr/local/bin/mihomo"  # CLI 管理脚本
 CONF_DIR="/etc/mihomo"
 CONF_FILE="$CONF_DIR/config.yaml"
 SUB_INFO_FILE="$CONF_DIR/.subscription_info"
@@ -29,14 +30,14 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# 如果已经安装核心 → 直接进入管理菜单（你原有的 mihomo 脚本）
-if [[ -x "$MIHOMO_BIN" && -f "$CONF_FILE" ]]; then
-    exec "$MIHOMO_BIN"
+# 如果已经安装 CLI 入口 → 直接执行它（弹出菜单）
+if [[ -x "$MIHOMO_CLI" && -f "$CONF_FILE" ]]; then
+    exec "$MIHOMO_CLI"
 fi
 
 clear
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}     Mihomo 裸核网关一键部署（推荐版）    ${NC}"
+echo -e "${BLUE}     Mihomo 裸核网关一键部署（CLI 版）    ${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # 日志开始
@@ -46,7 +47,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] 安装开始"
 # =========================================================
 # 1. 系统依赖
 # =========================================================
-echo -e "\n${YELLOW}>>> [1/6] 安装依赖${NC}"
+echo -e "\n${YELLOW}>>> [1/7] 安装依赖${NC}"
 PACKAGES="curl tar gzip unzip jq nano bc coreutils"
 if [[ -f /etc/debian_version ]]; then
     apt update -qq && apt install -yqq $PACKAGES
@@ -65,7 +66,7 @@ grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null || \
 # =========================================================
 # 2. 下载最新 Mihomo 核心
 # =========================================================
-echo -e "\n${YELLOW}>>> [2/6] 下载最新 Mihomo 核心${NC}"
+echo -e "\n${YELLOW}>>> [2/7] 下载最新 Mihomo 核心${NC}"
 
 ARCH=$(uname -m)
 case $ARCH in
@@ -74,7 +75,7 @@ case $ARCH in
     *) echo -e "${RED}不支持的架构: $ARCH${NC}"; exit 1 ;;
 esac
 
-# 自动获取最新版本（比写死 v1.18.x 更推荐）
+# 自动获取最新版本
 LATEST_TAG=$(curl -sL --max-time 15 \
     "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" | \
     jq -r '.tag_name' || echo "v1.18.10")
@@ -95,20 +96,20 @@ curl --fail --location --max-time 60 -o /tmp/mihomo.gz "${BASE_URL}/${FILE_NAME}
     exit 1
 }
 
-gzip -dc /tmp/mihomo.gz > /tmp/mihomo
-install -m 755 /tmp/mihomo "$MIHOMO_BIN"
+gzip -dc /tmp/mihomo.gz > /tmp/mihomo-core
+install -m 755 /tmp/mihomo-core "$CORE_BIN"
 rm -f /tmp/mihomo*
 
-# 地理数据库（推荐用 lite 版，体积小更新快）
+# 地理数据库
 curl -sL -o "$CONF_DIR/Country.mmdb" \
     "${GH_PROXY}https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country-lite.mmdb"
 
-mkdir -p "$CONF_DIR/ui"
+mkdir -p "$CONF_DIR/ui"  # 预留给未来 Dashboard，如果需要
 
 # =========================================================
 # 3. 用户配置
 # =========================================================
-echo -e "\n${YELLOW}>>> [3/6] 配置订阅与通知${NC}"
+echo -e "\n${YELLOW}>>> [3/7] 配置订阅与通知${NC}"
 read -rp "订阅链接: " SUB_URL
 read -rp "自动更新间隔(分钟, 默认 60): " SUB_INTERVAL
 read -rp "Notify 接口地址 (留空禁用): " NOTIFY_URL
@@ -126,7 +127,7 @@ EOF
 # =========================================================
 # 4. 生成辅助脚本
 # =========================================================
-echo -e "\n${YELLOW}>>> [4/6] 生成辅助脚本${NC}"
+echo -e "\n${YELLOW}>>> [4/7] 生成辅助脚本${NC}"
 
 # 通知脚本
 cat > "$NOTIFY_SCRIPT" <<'EOF'
@@ -171,7 +172,7 @@ fi
 EOF
 chmod +x "$UPDATE_SCRIPT"
 
-# Watchdog 脚本（内存 + 连通性检测）
+# Watchdog 脚本
 cat > "$WATCHDOG_SCRIPT" <<'EOF'
 #!/bin/bash
 NOTIFY="/usr/local/bin/mihomo-notify.sh"
@@ -195,9 +196,53 @@ EOF
 chmod +x "$WATCHDOG_SCRIPT"
 
 # =========================================================
-# 5. systemd 服务 & 定时任务
+# 5. 生成 CLI 管理菜单脚本
 # =========================================================
-echo -e "\n${YELLOW}>>> [5/6] 注册 systemd 服务与定时器${NC}"
+echo -e "\n${YELLOW}>>> [5/7] 生成 CLI 管理菜单${NC}"
+
+cat > "$MIHOMO_CLI" <<'EOF'
+#!/bin/bash
+# Mihomo CLI 管理菜单（简单 SSH 操作界面）
+
+RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' NC='\033[0m'
+
+while true; do
+    clear
+    echo -e "${YELLOW}=== Mihomo 管理菜单 ===${NC}"
+    echo "1. 启动服务"
+    echo "2. 停止服务"
+    echo "3. 重启服务"
+    echo "4. 查看服务状态"
+    echo "5. 更新订阅配置"
+    echo "6. 编辑配置文件"
+    echo "7. 查看服务日志"
+    echo "8. 运行 Watchdog 检查"
+    echo "9. 发送测试通知"
+    echo "0. 退出菜单"
+    read -rp "选择选项: " choice
+
+    case $choice in
+        1) systemctl start mihomo && echo -e "${GREEN}服务已启动${NC}" ;;
+        2) systemctl stop mihomo && echo -e "${GREEN}服务已停止${NC}" ;;
+        3) systemctl restart mihomo && echo -e "${GREEN}服务已重启${NC}" ;;
+        4) systemctl status mihomo ;;
+        5) /usr/local/bin/mihomo-update.sh && echo -e "${GREEN}订阅已更新${NC}" ;;
+        6) nano /etc/mihomo/config.yaml && systemctl restart mihomo ;;
+        7) journalctl -u mihomo -f ;;
+        8) /usr/local/bin/mihomo-watchdog.sh && echo -e "${GREEN}Watchdog 检查完成${NC}" ;;
+        9) /usr/local/bin/mihomo-notify.sh "测试通知" "这是一个测试消息" && echo -e "${GREEN}测试通知已发送${NC}" ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效选项，按任意键返回${NC}" ;;
+    esac
+    read -rp "按任意键继续..."
+done
+EOF
+chmod +x "$MIHOMO_CLI"
+
+# =========================================================
+# 6. systemd 服务 & 定时任务
+# =========================================================
+echo -e "\n${YELLOW}>>> [6/7] 注册 systemd 服务${NC}"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -207,7 +252,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$MIHOMO_BIN -d $CONF_DIR -f $CONF_FILE
+ExecStart=$CORE_BIN -d $CONF_DIR -f $CONF_FILE
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
@@ -220,21 +265,19 @@ ExecStartPost=/bin/bash -c 'sleep 3 && [ ! -f /tmp/.mihomo_mute_notify ] && $NOT
 WantedBy=multi-user.target
 EOF
 
-# 简单起见，这里用 systemd timer（更推荐）或 cron 都行
-# 这里只放服务，定时更新建议后续手动加 cron 或 timer
 systemctl daemon-reload
 systemctl enable --now mihomo
 
 # =========================================================
-# 6. 首次更新 & 完成
+# 7. 首次更新 & 完成
 # =========================================================
-echo -e "\n${YELLOW}>>> [6/6] 首次更新配置 & 启动${NC}"
+echo -e "\n${YELLOW}>>> [7/7] 首次更新配置 & 启动${NC}"
 bash "$UPDATE_SCRIPT" || true
 
 "$NOTIFY_SCRIPT" "部署完成" "Mihomo 已安装并启动\n版本: $LATEST_TAG\n更新间隔: ${SUB_INTERVAL}分钟"
 
 echo -e "\n${GREEN}部署完成！核心版本：${LATEST_TAG}${NC}"
-echo -e "管理命令：  ${CYAN}$MIHOMO_BIN${NC}"
+echo -e "管理命令：  ${CYAN}mihomo${NC}  （输入此命令弹出菜单）"
 echo -e "配置文件：  ${CYAN}$CONF_FILE${NC}"
 echo -e "查看日志：  ${CYAN}journalctl -u mihomo -f${NC}"
 echo -e "安装日志：  ${CYAN}$LOG_FILE${NC}\n"
@@ -242,5 +285,5 @@ echo -e "安装日志：  ${CYAN}$LOG_FILE${NC}\n"
 # 清理安装脚本（可选）
 # rm -f "$0"
 
-# 如果你有管理菜单脚本，可以在这里 exec 它
-# exec "$MIHOMO_BIN"   # ← 如果 mihomo 本身就是管理入口
+# 进入管理菜单
+exec "$MIHOMO_CLI"

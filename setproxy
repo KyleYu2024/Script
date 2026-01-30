@@ -1,61 +1,85 @@
 #!/bin/bash
 
 # =================================================================
-# 代理快捷指令管理脚本 (Proxy Alias Manager)
-# 功能：一键配置 setproxy/unsetproxy/myip 别名
+# 代理快捷指令管理工具 (Proxy Alias Manager)
+# 
+# 脚本功能：
+#   1. 一键配置 setproxy / unsetproxy / myip 别名
+#   2. 支持交互式菜单或静默参数模式
+#   3. 安装/卸载后自动重载 Shell，立即生效
+#
+# 使用方法:
+#   交互菜单:  bash <(curl -sL URL)
+#   静默安装:  bash <(curl -sL URL) 10.10.1.3 7890
+#   静默卸载:  bash <(curl -sL URL) uninstall
 # =================================================================
 
-# 颜色定义
+# --- 颜色定义 ---
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# 标记定义
+# --- 标记定义 ---
 START_MARKER="# ================= Proxy Settings (Auto-Generated) ================="
 END_MARKER="# ================================================================="
 
-# 自动检测 Shell 配置文件
+# --- 自动检测配置文件 ---
 if [[ "$SHELL" == *"zsh"* ]]; then
     CONFIG_FILE="$HOME/.zshrc"
+    CURRENT_SHELL="zsh"
 elif [[ -f "$HOME/.bashrc" ]]; then
     CONFIG_FILE="$HOME/.bashrc"
+    CURRENT_SHELL="bash"
 else
     CONFIG_FILE="$HOME/.profile"
+    CURRENT_SHELL="bash"
 fi
 
-# ==================== 函数定义区域 ====================
+# ==================== 核心函数 ====================
 
-# 函数: 卸载配置
+# 辅助函数：重载 Shell 环境
+function reload_shell() {
+    echo ""
+    echo -e "${YELLOW}⚡ 正在刷新 Shell 环境...${NC}"
+    # 给予用户 1 秒反应时间
+    sleep 1
+    # 使用 exec 替换当前进程，实现立即生效且无残留
+    exec "$CURRENT_SHELL" -l
+}
+
+# 函数：卸载配置
 function uninstall_proxy() {
-    echo -e "${YELLOW}正在检测配置文件: $CONFIG_FILE ...${NC}"
+    echo -e "${YELLOW}🔍 正在检测配置文件: $CONFIG_FILE ...${NC}"
     
     if grep -qF "$START_MARKER" "$CONFIG_FILE"; then
-        # 备份
+        # 1. 备份原文件
         cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
-        echo -e "已备份原配置至: ${CONFIG_FILE}.bak_uninstall"
+        echo -e "📦 已备份原配置至: ${CONFIG_FILE}.bak_uninstall"
         
-        # 删除配置块
+        # 2. 删除配置块 (适配 MacOS/Linux sed 差异)
         if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "/$START_MARKER/,/$END_MARKER/d" "$CONFIG_FILE"
         else
             sed -i "/$START_MARKER/,/$END_MARKER/d" "$CONFIG_FILE"
         fi
         
-        echo -e "${GREEN}✅ 卸载成功！代理配置已移除。${NC}"
-        echo -e "${YELLOW}👉 请执行 [ source $CONFIG_FILE ] 以刷新当前终端。${NC}"
+        echo -e "${GREEN}✅ 卸载成功！配置文件已清理。${NC}"
+        
+        # 3. 自动重载以清除内存中的 alias
+        reload_shell
     else
         echo -e "${RED}❌ 未发现代理配置，无需卸载。${NC}"
     fi
 }
 
-# 函数: 安装配置
+# 函数：安装配置
 function install_proxy() {
     local IN_IP=$1
     local IN_PORT=$2
 
-    # 如果没有传参，则交互输入 (注意 < /dev/tty)
+    # 如果没有传参，则交互输入 (使用 < /dev/tty 确保管道模式下能读取键盘)
     if [[ -z "$IN_IP" ]]; then
         echo ""
         read -p "请输入代理服务器 IP (默认 127.0.0.1): " input_ip < /dev/tty
@@ -67,9 +91,9 @@ function install_proxy() {
         IN_PORT=${input_port:-7890}
     fi
 
-    echo -e "即将设置代理: ${GREEN}${IN_IP}:${IN_PORT}${NC}"
+    echo -e "🚀 即将设置代理目标: ${GREEN}${IN_IP}:${IN_PORT}${NC}"
 
-    # 清理旧配置 (防止重复)
+    # 1. 清理旧配置 (防止重复添加)
     if grep -qF "$START_MARKER" "$CONFIG_FILE"; then
         if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "/$START_MARKER/,/$END_MARKER/d" "$CONFIG_FILE"
@@ -78,7 +102,7 @@ function install_proxy() {
         fi
     fi
 
-    # 写入新配置
+    # 2. 写入新配置
     cat >> "$CONFIG_FILE" <<EOF
 
 $START_MARKER
@@ -86,42 +110,41 @@ $START_MARKER
 PROXY_HOST="$IN_IP"
 PROXY_PORT="$IN_PORT"
 
-# 开启代理
+# 开启代理 (HTTP/HTTPS/FTP/ALL)
 alias setproxy="export http_proxy=http://\$PROXY_HOST:\$PROXY_PORT && \\
                 export https_proxy=http://\$PROXY_HOST:\$PROXY_PORT && \\
                 export ftp_proxy=http://\$PROXY_HOST:\$PROXY_PORT && \\
                 export all_proxy=http://\$PROXY_HOST:\$PROXY_PORT && \\
                 echo -e '\033[32m[Proxy ON] 已开启代理 -> \$PROXY_HOST:\$PROXY_PORT\033[0m'"
 
-# 关闭代理
+# 关闭代理 (清除所有变量)
 alias unsetproxy="unset http_proxy https_proxy ftp_proxy all_proxy && \\
                   echo -e '\033[31m[Proxy OFF] 代理已关闭，恢复直连\033[0m'"
 
-# 查看当前 IP
+# 查看当前 IP (测试连接)
 alias myip="curl -s --connect-timeout 5 ipinfo.io/ip"
 $END_MARKER
 EOF
 
     echo -e "${GREEN}✅ 配置写入成功！${NC}"
-    echo ""
-    echo -e "${YELLOW}!!! 安装完成，请执行以下命令立即生效 !!!${NC}"
-    echo -e "${GREEN}source $CONFIG_FILE${NC}"
+    
+    # 3. 自动重载使 alias 立即生效
+    reload_shell
 }
 
-# ==================== 主逻辑区域 ====================
+# ==================== 主逻辑 ====================
 
-# 1. 检查是否有参数传入 (静默模式)
+# 场景 1: 带参数运行 (静默模式)
 if [[ -n "$1" ]]; then
     if [[ "$1" == "uninstall" ]]; then
         uninstall_proxy
     else
-        # 假设参数是 IP 和 端口
         install_proxy "$1" "$2"
     fi
     exit 0
 fi
 
-# 2. 如果没有参数，显示交互菜单
+# 场景 2: 无参数运行 (交互菜单)
 clear
 echo -e "${CYAN}========================================${NC}"
 echo -e "${GREEN}    代理快捷指令管理工具 (Proxy Manager)${NC}"

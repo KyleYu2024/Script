@@ -1,17 +1,17 @@
 #!/bin/bash
 
 # =================================================================
-# 代理快捷指令管理工具 (Proxy Alias Manager)
+# 代理快捷指令管理工具 (Proxy Alias Manager) - 修复版
 # 
 # 脚本功能：
 #   1. 一键配置 setproxy / unsetproxy / myip 别名
 #   2. 支持交互式菜单或静默参数模式
-#   3. 安装/卸载后自动重载 Shell，立即生效
+#   3. 安装/卸载后自动提示重载
 #
 # 使用方法:
-#   交互菜单:  bash <(curl -sL URL)
-#   静默安装:  bash <(curl -sL URL) 10.10.1.3 7890
-#   静默卸载:  bash <(curl -sL URL) uninstall
+#   交互菜单:  bash proxy.sh
+#   静默安装:  bash proxy.sh 127.0.0.1 7890
+#   静默卸载:  bash proxy.sh uninstall
 # =================================================================
 
 # --- 颜色定义 ---
@@ -26,27 +26,33 @@ START_MARKER="# ================= Proxy Settings (Auto-Generated) ==============
 END_MARKER="# ================================================================="
 
 # --- 自动检测配置文件 ---
+# 优先检测当前 Shell，其次检测文件是否存在
 if [[ "$SHELL" == *"zsh"* ]]; then
     CONFIG_FILE="$HOME/.zshrc"
     CURRENT_SHELL="zsh"
-elif [[ -f "$HOME/.bashrc" ]]; then
-    CONFIG_FILE="$HOME/.bashrc"
+elif [[ "$SHELL" == *"bash"* ]]; then
+    if [[ -f "$HOME/.bashrc" ]]; then
+        CONFIG_FILE="$HOME/.bashrc"
+    else
+        CONFIG_FILE="$HOME/.bash_profile"
+    fi
     CURRENT_SHELL="bash"
 else
+    # 兜底 fallback
     CONFIG_FILE="$HOME/.profile"
     CURRENT_SHELL="bash"
 fi
 
 # ==================== 核心函数 ====================
 
-# 辅助函数：重载 Shell 环境
-function reload_shell() {
+# 辅助函数：提示用户重载环境
+# 注意：直接使用 exec 可能会导致 SSH 断开或窗口关闭，改为提示用户手动 source 更安全
+function reload_hint() {
     echo ""
-    echo -e "${YELLOW}⚡ 正在刷新 Shell 环境...${NC}"
-    # 给予用户 1 秒反应时间
-    sleep 1
-    # 使用 exec 替换当前进程，实现立即生效且无残留
-    exec "$CURRENT_SHELL" -l
+    echo -e "${YELLOW}⚡ 配置已更新！${NC}"
+    echo -e "请执行以下命令使配置立即生效："
+    echo -e "${GREEN}    source $CONFIG_FILE${NC}"
+    echo ""
 }
 
 # 函数：卸载配置
@@ -58,7 +64,7 @@ function uninstall_proxy() {
         cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
         echo -e "📦 已备份原配置至: ${CONFIG_FILE}.bak_uninstall"
         
-        # 2. 删除配置块 (适配 MacOS/Linux sed 差异)
+        # 2. 删除配置块 (兼容 MacOS/Linux)
         if [[ "$OSTYPE" == "darwin"* ]]; then
             sed -i '' "/$START_MARKER/,/$END_MARKER/d" "$CONFIG_FILE"
         else
@@ -67,8 +73,8 @@ function uninstall_proxy() {
         
         echo -e "${GREEN}✅ 卸载成功！配置文件已清理。${NC}"
         
-        # 3. 自动重载以清除内存中的 alias
-        reload_shell
+        # 3. 提示重载
+        reload_hint
     else
         echo -e "${RED}❌ 未发现代理配置，无需卸载。${NC}"
     fi
@@ -79,15 +85,24 @@ function install_proxy() {
     local IN_IP=$1
     local IN_PORT=$2
 
-    # 如果没有传参，则交互输入 (使用 < /dev/tty 确保管道模式下能读取键盘)
+    # 如果没有传参，则交互输入
     if [[ -z "$IN_IP" ]]; then
         echo ""
-        read -p "请输入代理服务器 IP (默认 127.0.0.1): " input_ip < /dev/tty
+        # 尝试从 tty 读取，如果失败(如 curl | bash)则尝试默认 fd
+        if [ -t 0 ]; then
+             read -p "请输入代理服务器 IP (默认 127.0.0.1): " input_ip
+        else
+             read -p "请输入代理服务器 IP (默认 127.0.0.1): " input_ip < /dev/tty
+        fi
         IN_IP=${input_ip:-127.0.0.1}
     fi
 
     if [[ -z "$IN_PORT" ]]; then
-        read -p "请输入代理端口 (默认 7890): " input_port < /dev/tty
+        if [ -t 0 ]; then
+             read -p "请输入代理端口 (默认 7890): " input_port
+        else
+             read -p "请输入代理端口 (默认 7890): " input_port < /dev/tty
+        fi
         IN_PORT=${input_port:-7890}
     fi
 
@@ -103,6 +118,7 @@ function install_proxy() {
     fi
 
     # 2. 写入新配置
+    # 注意：下面的 EOF 必须不能有前置缩进，否则会报错
     cat >> "$CONFIG_FILE" <<EOF
 
 $START_MARKER
@@ -128,8 +144,8 @@ EOF
 
     echo -e "${GREEN}✅ 配置写入成功！${NC}"
     
-    # 3. 自动重载使 alias 立即生效
-    reload_shell
+    # 3. 提示重载
+    reload_hint
 }
 
 # ==================== 主逻辑 ====================
@@ -149,6 +165,7 @@ clear
 echo -e "${CYAN}========================================${NC}"
 echo -e "${GREEN}    代理快捷指令管理工具 (Proxy Manager)${NC}"
 echo -e "${CYAN}========================================${NC}"
+echo -e "当前 Shell: ${YELLOW}$CURRENT_SHELL${NC}"
 echo -e "当前配置文件: ${YELLOW}$CONFIG_FILE${NC}"
 echo ""
 echo -e "请选择操作："
@@ -156,7 +173,13 @@ echo -e "  ${GREEN}1.${NC} 安装/更新 代理配置 (Install/Update)"
 echo -e "  ${RED}2.${NC} 卸载 代理配置 (Uninstall)"
 echo -e "  ${CYAN}0.${NC} 退出 (Exit)"
 echo ""
-read -p "请输入选项 [1-2]: " choice < /dev/tty
+
+# 兼容读取输入
+if [ -t 0 ]; then
+    read -p "请输入选项 [1-2]: " choice
+else
+    read -p "请输入选项 [1-2]: " choice < /dev/tty
+fi
 
 case "$choice" in
     1)

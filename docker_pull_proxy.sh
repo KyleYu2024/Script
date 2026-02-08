@@ -26,7 +26,7 @@ DAEMON_JSON="/etc/docker/daemon.json"
 
 # 默认加速镜像列表 (包含你提到的 docker.1ms.run)
 # 如果你有其他优选地址，可以在这里添加
-DEFAULT_MIRRORS='"https://docker.1ms.run", "https://docker.m.daocloud.io", "https://dockerproxy.com"'
+DEFAULT_MIRRORS='"https://docker.1ms.run"'
 
 # -----------------------------------------------------------------
 # 功能函数

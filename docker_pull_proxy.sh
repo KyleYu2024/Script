@@ -68,31 +68,40 @@ config_mirrors() {
     if [[ "$use_default" == "y" ]]; then
         mirrors_content="$DEFAULT_MIRRORS"
     else
-        echo -e "请输入自定义镜像地址 (格式: \"url1\", \"url2\"):"
-        read -p "> " custom_mirrors
-        mirrors_content="$custom_mirrors"
+        echo -e "请输入自定义镜像地址 (多个地址用逗号分隔，例如: https://mirror1.com, https://mirror2.com):"
+        read -p "> " custom_input
+        
+        # 自动处理引号：先移除所有双引号，再为每个逗号分隔的项添加引号
+        clean_input=$(echo "$custom_input" | sed 's/"//g')
+        IFS=',' read -ra ADDR <<< "$clean_input"
+        for i in "${!ADDR[@]}"; do
+            item=$(echo "${ADDR[$i]}" | xargs)
+            if [ -n "$item" ]; then
+                if [ -z "$mirrors_content" ]; then
+                    mirrors_content="\"$item\""
+                else
+                    mirrors_content="$mirrors_content, \"$item\""
+                fi
+            fi
+        done
     fi
 
-    # 检查是否存在 daemon.json，如果存在则尝试保留其他配置
-    if [ -f "$DAEMON_JSON" ]; then
-        # 简单判断是否是合法 JSON，如果太复杂建议手动合并
-        echo -e "${YELLOW}发现现有 daemon.json，正在覆盖 registry-mirrors 配置...${NC}"
-        # 这里为了脚本健壮性，选择直接覆盖或重写 registry-mirrors 键值
-        # 如果你原本有 log-driver 等配置，这里使用 jq 或 python 会更安全，
-        # 但为了通用性，这里采用覆盖重写方式，请注意！
-        cat > "$DAEMON_JSON" <<EOF
-{
-  "registry-mirrors": [$mirrors_content]
-}
-EOF
-    else
-        mkdir -p /etc/docker
-        cat > "$DAEMON_JSON" <<EOF
-{
-  "registry-mirrors": [$mirrors_content]
-}
-EOF
+    if [ -z "$mirrors_content" ]; then
+        echo -e "${RED}镜像地址为空，跳过加速镜像设置。${NC}"
+        return
     fi
+
+    # 检查是否存在 daemon.json
+    mkdir -p /etc/docker
+    if [ -f "$DAEMON_JSON" ]; then
+        echo -e "${YELLOW}发现现有 daemon.json，正在覆盖 registry-mirrors 配置...${NC}"
+    fi
+
+    cat > "$DAEMON_JSON" <<EOF
+{
+  "registry-mirrors": [$mirrors_content]
+}
+EOF
     echo -e "${GREEN}√ 镜像加速器配置已更新${NC}"
 }
 
@@ -120,12 +129,17 @@ reset_defaults() {
 apply_changes() {
     echo -e "\n${BLUE}>>> 重载 Docker 服务...${NC}"
     systemctl daemon-reload
-    systemctl restart docker
-    
-    echo -e "\n${GREEN}=== 配置完成 ===${NC}"
-    echo -e "检查生效状态："
-    echo -e "1. 代理状态: $(systemctl show --property=Environment docker | grep HTTP_PROXY || echo '无')"
-    echo -e "2. 镜像状态: $(docker info 2>/dev/null | grep 'Registry Mirrors' -A 1 || echo '无')"
+    if systemctl restart docker; then
+        echo -e "\n${GREEN}=== 配置完成 ===${NC}"
+        echo -e "检查生效状态："
+        echo -e "1. 代理状态: $(systemctl show --property=Environment docker | grep HTTP_PROXY || echo '无')"
+        echo -e "2. 镜像状态: $(docker info 2>/dev/null | grep 'Registry Mirrors' -A 1 || echo '无')"
+    else
+        echo -e "\n${RED}错误：Docker 服务启动失败！${NC}"
+        echo -e "${YELLOW}请检查 /etc/docker/daemon.json 格式是否正确。${NC}"
+        echo -e "${YELLOW}查看错误详情: journalctl -xeu docker.service${NC}"
+        return 1
+    fi
 }
 
 # -----------------------------------------------------------------

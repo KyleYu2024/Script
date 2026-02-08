@@ -17,3 +17,9 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/refs/heads/main/setproxy)
 ```
+
+## 4.Linux添加docker代理和加速镜像
+
+```bash
+bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/refs/heads/main/docker_pull_proxy.sh)
+```

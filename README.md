@@ -1,5 +1,6 @@
 ## 1. 微信转发服务 (Wxchat)
-在 VPS 上一键安装微信转发容器，用于配置可信 IP。
+在 VPS 上一键安装微信转发容器，用于配置可信 IP
+
 docker版
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/wxchat.sh)
@@ -9,7 +10,7 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/install_wxchat.sh)
 ```
 ## 2. PVE LXC Docker 初始化模板
-新建一个编号为 199 的 Proxmox VE LXC 容器，自动安装 Docker 环境并开启 IP 转发。
+新建一个编号为 199 的 Proxmox VE LXC 容器，自动安装 Docker 环境并开启 IP 转发
 
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/setup-lxc-docker.sh)

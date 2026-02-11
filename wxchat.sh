@@ -49,7 +49,7 @@ docker run -d \
     --name wxchat \
     --restart=always \
     -p "${HOST_PORT}:80" \
-    ddsderek/wxchat:latest
+    docker.1ms.run/ddsderek/wxchat:latest
 
 # 4. 检查结果
 if [ $? -eq 0 ]; then

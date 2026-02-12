@@ -20,7 +20,7 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 制作setproxy，用于临时给Linux系统调用局域网内的http代理
 
 ```bash
-bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/refs/heads/main/setproxy)
+bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/refs/heads/main/setproxy.sh)
 ```
 
 ## 4.Linux添加docker代理和加速镜像

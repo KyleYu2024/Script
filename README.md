@@ -1,11 +1,6 @@
 ## 1. 微信转发服务 (Wxchat)
 在 VPS 上一键安装微信转发容器，用于配置可信 IP
 
-docker版
-```bash
-bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/wxchat.sh)
-```
-二进制版
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/install_wxchat.sh)
 ```

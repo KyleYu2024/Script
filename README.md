@@ -30,3 +30,9 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/macvlan_setup.sh)
 ```
+
+## 6.lxc开启ssh访问
+
+```bash
+bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/lxc-ssh.sh)
+```

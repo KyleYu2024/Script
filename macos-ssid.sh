@@ -62,7 +62,7 @@ cat << 'EOF' > "$SCRIPT_FILE"
 sleep 3
 
 CONF_FILE="$HOME/.wifi_configs"
-WIFI_IF="en0" # 强制锁定 Mac Wi-Fi 网卡
+WIFI_IF="Wi-Fi" # 锁定网络服务名为 Wi-Fi
 
 # [绝招] 使用 system_profiler 绕过定位权限抓取 SSID，稳如老狗
 CURRENT_SSID=$(system_profiler SPAirPortDataType 2>/dev/null | awk -F': ' '/Current Network Information:/{getline; print $1}' | sed 's/^[ \t]*//')

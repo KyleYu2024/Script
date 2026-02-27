@@ -20,26 +20,41 @@ fi
 
 clear
 echo -e "${BLUE}#################################################${NC}"
-echo -e "${BLUE}#     Docker Macvlan 一键配置   #${NC}"
+echo -e "${BLUE}#     Docker Macvlan 智能一键配置工具   #${NC}"
 echo -e "${BLUE}#################################################${NC}"
 
 # ==========================================
 # 1. 智能获取网卡
 # ==========================================
-echo -e "\n${YELLOW}[1/5] 选择物理网卡...${NC}"
+echo -e "\n${YELLOW}[1/5] 智能检测物理网卡...${NC}"
 
-# 排除虚拟网卡，只显示物理网卡
+# 排除虚拟网卡，只显示物理网卡列表供参考
 INTERFACES=$(ip -o link show | awk -F': ' '{print $2}' | grep -vE "lo|docker|veth|shim|macvlan|tun|virbr")
 
-echo "-------------------------------------"
+# 核心改进：自动推断当前出网的主网卡
+DEFAULT_IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n 1)
+if [ -z "$DEFAULT_IFACE" ]; then
+    # 备用方案：查默认路由
+    DEFAULT_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
+fi
+
+echo "------------------------------------------------------------"
 echo "系统检测到以下物理网卡:"
 echo -e "${GREEN}${INTERFACES}${NC}"
-echo "-------------------------------------"
-read -p "请输入网卡名称 (例如 eth0): " PARENT_INTERFACE
+echo "------------------------------------------------------------"
+
+if [ -n "$DEFAULT_IFACE" ]; then
+    echo -e "💡 系统推测你的主网卡是: ${GREEN}$DEFAULT_IFACE${NC}"
+    read -p "请输入网卡名称 [直接回车默认使用: $DEFAULT_IFACE]: " INPUT_IFACE
+    PARENT_INTERFACE=${INPUT_IFACE:-$DEFAULT_IFACE}
+else
+    echo -e "小白提示：请直接从上方${GREEN}绿字${NC}中复制名称 (如 eth0, enp3s0)"
+    read -p "请输入网卡名称: " PARENT_INTERFACE
+fi
 
 # 验证网卡是否存在
 if ! ip link show "$PARENT_INTERFACE" > /dev/null 2>&1; then
-    echo -e "${RED}错误: 找不到网卡 $PARENT_INTERFACE${NC}"
+    echo -e "${RED}错误: 找不到网卡 $PARENT_INTERFACE，请检查拼写！${NC}"
     exit 1
 fi
 
@@ -48,69 +63,75 @@ fi
 # ==========================================
 echo -e "\n${YELLOW}[2/5] 分析网络环境...${NC}"
 
-# 获取该网卡的完整 CIDR (例如 192.168.1.5/24)
-FULL_CIDR=$(ip -o -f inet addr show $PARENT_INTERFACE | awk '{print $4}' | head -n 1)
-# 获取网关 IP
+HOST_IP_CIDR=$(ip -o -f inet addr show $PARENT_INTERFACE | awk '{print $4}' | head -n 1)
+NETWORK_CIDR=$(ip route show dev $PARENT_INTERFACE scope link | awk '{print $1}' | head -n 1)
 GATEWAY_IP=$(ip route | grep default | grep $PARENT_INTERFACE | awk '{print $3}' | head -n 1)
-
-# 提取子网前缀 (例如 192.168.1)
 SUBNET_PREFIX=$(echo $GATEWAY_IP | awk -F. '{print $1"."$2"."$3}')
 
-echo -e "  - 网卡 IP/掩码: ${GREEN}$FULL_CIDR${NC}"
-echo -e "  - 网关地址:    ${GREEN}$GATEWAY_IP${NC}"
-echo -e "  - IP 前缀:     ${GREEN}$SUBNET_PREFIX.x${NC}"
+echo -e "  - 当前网卡 IP:   ${GREEN}$HOST_IP_CIDR${NC}"
+echo -e "  - 所在网段 CIDR: ${GREEN}$NETWORK_CIDR${NC} (将用于 Docker 网络)"
+echo -e "  - 网关地址:      ${GREEN}$GATEWAY_IP${NC}"
+echo -e "  - IP 前缀:       ${GREEN}$SUBNET_PREFIX.x${NC}"
 
-if [ -z "$FULL_CIDR" ] || [ -z "$GATEWAY_IP" ]; then
+if [ -z "$NETWORK_CIDR" ] || [ -z "$GATEWAY_IP" ]; then
     echo -e "${RED}错误: 无法自动获取网络信息，请检查网络连接！${NC}"
     exit 1
 fi
 
 # ==========================================
-# 3. 配置用户参数
+# 3. 配置用户参数 (小白防呆版)
 # ==========================================
-echo -e "\n${YELLOW}[3/5] 配置 Macvlan IP 范围...${NC}"
-echo "-------------------------------------"
-echo "请规划一段 IP 专门给 Docker 容器和宿主机通信使用。"
-echo "确保这段 IP 没有被家中其他设备占用！"
-echo "-------------------------------------"
+echo -e "\n${YELLOW}[3/5] 规划 Macvlan 专属 IP 地址段...${NC}"
+echo "------------------------------------------------------------"
+echo -e "⚠️  ${RED}防断网警告：${NC}为了防止 IP 冲突导致设备掉线，我们需要从你家的"
+echo "局域网中，划出一小段【绝对没有被路由器分配给其他设备】的空闲 IP。"
+echo "（建议这一段 IP 的数字尽量大一点，比如 200 以后）"
+echo "------------------------------------------------------------"
 
-# 设置 Shim IP (宿主机在 Macvlan 里的替身)
-read -p "请输入宿主机通信专用 IP (最后一位数字) [推荐: 220]: " SHIM_HOST_ID
+# 设置 Shim IP
+echo -e "\n${GREEN}▶ 第一步：给宿主机分配一个“虚拟通讯 IP”${NC}"
+echo "原因：在 Macvlan 模式下，宿主机和容器默认是失联的。我们需要给宿主机"
+echo "      分配一个专属的替身 IP，让它俩能互相说话。"
+read -p "请输入此虚拟 IP 的最后一位数字 (推荐空闲数字，如 220): " SHIM_HOST_ID
 SHIM_HOST_ID=${SHIM_HOST_ID:-220}
 SHIM_IP="${SUBNET_PREFIX}.${SHIM_HOST_ID}"
 
 # 设置容器范围
-read -p "容器起始 IP (最后一位数字) [推荐: 221]: " START_ID
+echo -e "\n${GREEN}▶ 第二步：划定 Docker 容器的专属 IP 范围${NC}"
+echo "原因：以后新建的 Macvlan 容器，都会在这个范围里排队领 IP。"
+read -p "请输入【容器起始 IP】最后一位数字 (如 221): " START_ID
 START_ID=${START_ID:-221}
 
-read -p "容器结束 IP (最后一位数字) [推荐: 230]: " END_ID
+read -p "请输入【容器结束 IP】最后一位数字 (如 230): " END_ID
 END_ID=${END_ID:-230}
 
-# 简单检查
+# 逻辑冲突检查
 if [ $START_ID -ge $END_ID ]; then
-    echo -e "${RED}错误: 起始数字必须小于结束数字！${NC}"
+    echo -e "${RED}错误: 起始数字必须小于结束数字！(例如 221 -> 230)${NC}"
     exit 1
 fi
+if [ "$SHIM_HOST_ID" -ge "$START_ID" ] && [ "$SHIM_HOST_ID" -le "$END_ID" ]; then
+    echo -e "${YELLOW}警告: 宿主机的虚拟 IP ($SHIM_HOST_ID) 包含在了容器的 IP 范围内！${NC}"
+    echo "为了稳定，强烈建议宿主机 IP 和容器 IP 范围错开。"
+    read -p "按回车键强行继续，或按 Ctrl+C 退出重来..."
+fi
 
-echo -e "-------------------------------------"
-echo -e "将在宿主机添加路由: ${GREEN}${SUBNET_PREFIX}.${START_ID} -> ${SUBNET_PREFIX}.${END_ID}${NC}"
-echo -e "宿主机通信 IP (Shim): ${GREEN}${SHIM_IP}${NC}"
-echo -e "-------------------------------------"
+echo -e "\n------------------------------------------------------------"
+echo -e "你的最终网络规划如下："
+echo -e "宿主机虚拟 IP (用于互相访问): ${GREEN}${SHIM_IP}${NC}"
+echo -e "Docker 容器可用 IP 范围:      ${GREEN}${SUBNET_PREFIX}.${START_ID} 到 ${SUBNET_PREFIX}.${END_ID}${NC}"
+echo -e "------------------------------------------------------------"
 
 # ==========================================
 # 4. 部署 Shim 脚本 (开机自启)
 # ==========================================
-echo -e "\n${YELLOW}[4/5] 部署系统服务...${NC}"
+echo -e "\n${YELLOW}[4/5] 部署宿主机互通服务 (Shim)...${NC}"
 
 SCRIPT_PATH="/usr/local/bin/macvlan_shim.sh"
 SERVICE_PATH="/etc/systemd/system/macvlan-shim.service"
 
-# --- 生成执行脚本 ---
 cat > $SCRIPT_PATH <<EOF
 #!/bin/bash
-# Auto-generated by Easy-Macvlan Script
-# 不要手动修改这里，重新运行安装脚本即可
-
 PARENT="$PARENT_INTERFACE"
 SHIM_NAME="macvlan-shim"
 SHIM_IP="$SHIM_IP/32"
@@ -118,19 +139,12 @@ PREFIX="$SUBNET_PREFIX"
 START=$START_ID
 END=$END_ID
 
-# 1. 等待物理网卡就绪
 sleep 5
-
-# 2. 清理旧接口 (防止报错)
 ip link show \$SHIM_NAME > /dev/null 2>&1 && ip link delete \$SHIM_NAME
-
-# 3. 创建垫片接口 (Shim)
 ip link add link \$PARENT dev \$SHIM_NAME type macvlan mode bridge
 ip addr add \$SHIM_IP dev \$SHIM_NAME
 ip link set \$SHIM_NAME up
 
-# 4. 添加路由 (宿主机 -> 容器)
-# 循环添加这一段范围内的所有 IP 路由指向 Shim
 for ((i=START; i<=END; i++)); do
     ip route add "\${PREFIX}.\$i" dev \$SHIM_NAME
 done
@@ -138,7 +152,6 @@ EOF
 
 chmod +x $SCRIPT_PATH
 
-# --- 生成 Systemd 服务 ---
 cat > $SERVICE_PATH <<EOF
 [Unit]
 Description=Macvlan Shim Logic
@@ -154,76 +167,96 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-# 启用并测试服务
 systemctl daemon-reload
 systemctl enable macvlan-shim.service >/dev/null 2>&1
-echo "正在启动服务进行测试..."
+echo "正在启动后台路由服务..."
 systemctl restart macvlan-shim.service
 
 if systemctl is-active --quiet macvlan-shim.service; then
-    echo -e "${GREEN}√ Shim 服务启动成功！宿主机已连通 macvlan 接口。${NC}"
+    echo -e "${GREEN}√ Shim 服务启动成功！宿主机现已打通 Macvlan 接口。${NC}"
 else
-    echo -e "${RED}X 服务启动失败，请检查报错！${NC}"
-    # 这里允许继续，因为可能是路由冲突，不影响网络创建
+    echo -e "${RED}X 服务启动失败，请使用 systemctl status macvlan-shim.service 检查报错！${NC}"
 fi
 
 # ==========================================
-# 5. Docker 网络创建
+# 5. Docker 网络预检与创建 (智能复用逻辑)
 # ==========================================
-echo -e "\n${YELLOW}[5/5] Docker 网络设置...${NC}"
-read -p "是否自动创建 Docker 网络? (y/n) [默认: y]: " CREATE_DOCKER
-CREATE_DOCKER=${CREATE_DOCKER:-y}
+echo -e "\n${YELLOW}[5/5] Docker 网络预检与配置...${NC}"
 
-NET_NAME="macvlan"
+NET_NAME="macvlan" # 默认名称
+CREATE_DOCKER="y"
 
-if [[ "$CREATE_DOCKER" == "y" ]]; then
-    # 删除旧网
-    docker network rm $NET_NAME >/dev/null 2>&1
+if ! docker info >/dev/null 2>&1; then
+    echo -e "${RED}警告: 无法连接到 Docker 服务！可能是未安装或未启动。${NC}"
+    echo -e "已跳过 Docker 网络创建步骤。"
+    CREATE_DOCKER="n"
+else
+    # 查找是否有挂载在当前网卡上的 macvlan
+    MATCHED_NET=""
+    EXISTING_MACVLANS=$(docker network ls --filter driver=macvlan --format "{{.Name}}")
     
-    # 创建网络
-    docker network create -d macvlan \
-        --subnet="$FULL_CIDR" \
-        --gateway="$GATEWAY_IP" \
-        -o parent="$PARENT_INTERFACE" \
-        $NET_NAME >/dev/null
+    for net in $EXISTING_MACVLANS; do
+        NET_PARENT=$(docker network inspect "$net" --format '{{index .Options "parent"}}' 2>/dev/null)
+        if [ "$NET_PARENT" == "$PARENT_INTERFACE" ]; then
+            MATCHED_NET="$net"
+            break
+        fi
+    done
 
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}√ Docker 网络 '$NET_NAME' 创建成功！${NC}"
+    if [ -n "$MATCHED_NET" ]; then
+        echo -e "🎉 ${GREEN}好消息：检测到网卡 $PARENT_INTERFACE 上已经存在名为 '$MATCHED_NET' 的 Macvlan 网络！${NC}"
+        echo -e "同网卡同网段无需重复创建，脚本将自动复用该网络。"
+        NET_NAME="$MATCHED_NET"
+        CREATE_DOCKER="n"
     else
-        echo -e "${RED}Docker 网络创建失败。${NC}"
+        read -p "请输入你想创建的网络名称 [直接回车默认: macvlan]: " USER_NET_NAME
+        NET_NAME=${USER_NET_NAME:-macvlan}
+        
+        # 检查名字是否被非当前网卡的网络占用了
+        if docker network inspect "$NET_NAME" >/dev/null 2>&1; then
+            echo -e "${RED}错误: 网络名称 '$NET_NAME' 已被其他网络占用，请先删除或更换名称。${NC}"
+            CREATE_DOCKER="n"
+        else
+            echo "正在执行 Docker Macvlan 创建命令..."
+            docker network create -d macvlan \
+                --subnet="$NETWORK_CIDR" \
+                --gateway="$GATEWAY_IP" \
+                -o parent="$PARENT_INTERFACE" \
+                "$NET_NAME"
+
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}√ Docker 网络 '$NET_NAME' 创建成功！${NC}"
+            else
+                echo -e "${RED}X Docker 网络创建失败。请检查上方报错信息。${NC}"
+            fi
+        fi
     fi
 fi
 
 # ==========================================
-# 6. 生成 Compose 模板 (重点)
+# 6. 生成 Compose 模板 (终极提示)
 # ==========================================
-echo -e "\n${BLUE}===========================================${NC}"
-echo -e "${GREEN}             全部配置完成！                ${NC}"
-echo -e "${BLUE}===========================================${NC}"
+echo -e "\n${BLUE}============================================================${NC}"
+echo -e "${GREEN}                  🎉 全部配置完成！ 🎉                   ${NC}"
+echo -e "${BLUE}============================================================${NC}"
 
-echo -e "\n请在你的 ${YELLOW}docker-compose.yml${NC} 文件中，复制粘贴以下内容："
-echo -e "务必复制 ${RED}红色部分${NC}，否则无法使用！"
-echo "------------------------------------------------"
+echo -e "\n在未来编写 ${YELLOW}docker-compose.yml${NC} 时，请参考以下模板："
+echo -e "务必注意 ${RED}红色部分${NC} 是必须要加的配置！"
+echo "------------------------------------------------------------"
 
-# 为了不破坏后续颜色，先打印头部
 echo "services:"
-echo "  your_service_name:"
-echo "    image: your_image:latest"
+echo "  your_service:"
+echo "    image: nginx:latest"
 echo "    container_name: macvlan_test"
 echo "    restart: always"
-
-# --- 重点标红区域 ---
 echo -e "${RED}    networks:"
-echo -e "      macvlan_net:"
-echo -e "        # 请确保 IP 在 ${SUBNET_PREFIX}.${START_ID} - ${SUBNET_PREFIX}.${END_ID} 之间"
+echo -e "      ${NET_NAME}_net:"
+echo -e "        # 你必须手动给容器指定一个 IP，范围是: ${START_ID} - ${END_ID}"
 echo -e "        ipv4_address: ${SUBNET_PREFIX}.${START_ID}${NC}"
-# --- 结束标红区域 ---
-
 echo ""
 echo -e "${RED}networks:"
-echo -e "  macvlan_net:"
+echo -e "  ${NET_NAME}_net:"
 echo -e "    external:"
 echo -e "      name: ${NET_NAME}${NC}"
-
-echo "------------------------------------------------"
-echo -e "${YELLOW}提示: ipv4_address 必须手动指定，且只能使用 ${START_ID} 到 ${END_ID} 之间的数字！${NC}"
+echo "------------------------------------------------------------"
+echo -e "${YELLOW}提示: 如果后续增加容器，只需把 ipv4_address 换成范围内的新 IP 即可。${NC}\n"

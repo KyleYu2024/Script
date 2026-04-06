@@ -36,3 +36,8 @@ bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu202
 ```bash
 bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/lxc-ssh.sh)
 ```
+## 7.linux下安装docker容器（compose）
+
+```bash
+bash <(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/KyleYu2024/Script/main/setup-docker.sh)
+```

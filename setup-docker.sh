@@ -10,32 +10,40 @@ echo -e "${GREEN}=== Docker Compose 一键部署脚本 ===${NC}"
 
 # 1. 提示用户输入安装路径，支持回车默认当前目录
 read -p "请输入安装路径 [直接回车默认当前目录]: " install_path
-
-# 如果用户未输入任何内容（直接回车），则使用当前目录
 if [ -z "$install_path" ]; then
   install_path="$PWD"
   echo -e "${YELLOW}未输入路径，默认使用当前目录: $install_path${NC}"
 fi
 
-# 创建并进入目录
 mkdir -p "$install_path"
 echo -e "${GREEN}已准备使用目录: $install_path${NC}"
 
 # 2. 接收多行 docker-compose.yaml 内容
 yaml_file="$install_path/docker-compose.yaml"
 
-echo -e "${YELLOW}请输入 docker-compose.yaml 的内容。${NC}"
-echo -e "${YELLOW}(粘贴全部内容后，请在新的一行手动输入 EOF 并按回车键结束)：${NC}"
+echo -e "${YELLOW}请粘贴 docker-compose.yaml 的内容。${NC}"
+echo -e "${GREEN}(粘贴完成后，连续按两次回车键即可确认并运行)：${NC}"
 
 # 清空或创建文件
 > "$yaml_file"
+empty_count=0
 
-# 读取用户输入直到遇到 EOF
+# 读取用户输入，通过连续两次空行判断结束
 while IFS= read -r line; do
-    if [[ "$line" == "EOF" ]]; then
-        break
+    if [ -z "$line" ]; then
+        ((empty_count++))
+        # 连续遇到两个空行，跳出循环
+        if [ "$empty_count" -ge 2 ]; then
+            break
+        fi
+    else
+        # 如果之前有且仅有1个空行，说明那是 YAML 内部的空行，需要补写进去
+        if [ "$empty_count" -eq 1 ]; then
+            echo "" >> "$yaml_file"
+        fi
+        empty_count=0
+        echo "$line" >> "$yaml_file"
     fi
-    echo "$line" >> "$yaml_file"
 done
 
 echo -e "${GREEN}配置文件已成功保存至 $yaml_file${NC}"
